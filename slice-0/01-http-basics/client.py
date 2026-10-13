@@ -1,52 +1,24 @@
-import socket
+import requests
 
-cs = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-cs.connect(("127.0.0.1", 8000))
+url = "http://127.0.0.1:8000/"
 
-request = (
-    "GET /error HTTP/1.1\r\n"
-    "Host: localhost:8000\r\n"
-    "\r\n"
-)
+try:
+    response = requests.get(url, timeout=3)
 
-cs.sendall(request.encode())
+    print("Status:", response.status_code)
+    print("Success:", response.ok)
+    print("Message:", response.json()["message"])
 
-response = b""
+    response.raise_for_status()
 
-while b"\r\n\r\n" not in response:
-    chunk = cs.recv(16)
-    if not chunk:
-        break
-    response += chunk
+except requests.exceptions.Timeout:
+    print("The request timed out.")
 
+except requests.exceptions.ConnectionError:
+    print("Could not connect to the server.")
 
-headers, body = response.split(b"\r\n\r\n", 1)
+except requests.exceptions.HTTPError as error:
+    print("The server returned an HTTP error:", error)
 
-headers_text = headers.decode()
-
-content_length = None
-
-for line in headers_text.split("\r\n"):
-    print("HEADER LINE:", repr(line))
-
-    if line.lower().startswith("content-length:"):
-        content_length = int(line.split(":", 1)[1].strip())
-        break
-
-if content_length is None:
-    raise ValueError("Content-Length header not found")
-
-while len(body) < content_length:
-    chunk = cs.recv(16)
-    if not chunk:
-        raise ConnectionError("Connection closed before complete body arrived")
-    
-    body += chunk
-
-print("HEADERS:")
-print(headers.decode())
-
-print("BODY SO FAR:")
-print(body.decode())
-
-cs.close()
+except requests.exceptions.RequestException as error:
+    print("Request failed:", error)

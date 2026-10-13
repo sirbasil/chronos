@@ -1,47 +1,35 @@
-import socket
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
 
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
-s.bind(("127.0.0.1", 8000))
-s.listen(1)
+class ChronosHandler(BaseHTTPRequestHandler):
 
-client_socket, address = s.accept()
+    def do_GET(self):
+        if self.path == "/":
+            status = 200
+            data = {"message": "Hello from server"}
 
-data = client_socket.recv(1024)
-message = data.decode()
+        elif self.path == "/error":
+            status = 500
+            data = {"message": "Internal server error"}
 
-print(message)
+        else:
+            status = 404
+            data = {"message": "Not Found"}
 
-if "GET / HTTP/1.1" in message:
+        body = json.dumps(data).encode("utf-8")
 
-    body = '{"message": "Hello from server"}'
-    body_bytes = body.encode()
-    reply = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        "\r\n"
-    ).encode() + body_bytes
-elif "GET /error HTTP/1.1" in message:
-    body = '{"message": "Internal Server error"}'
-    body_bytes = body.encode()
-    reply = (
-        "HTTP/1.1 500 Internal Server Error\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        "\r\n"
-    ).encode() + body_bytes
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
 
-else:
+        self.wfile.write(body)
 
-    body = '{"message": "Not Found"}'
-    body_bytes = body.encode()
 
-    reply = (
-        "HTTP/1.1 404 Not Found\r\n"
-        "Content-Type: application/json\r\n"
-        f"Content-Length: {len(body_bytes)}\r\n"
-        "\r\n"
-    ).encode() + body_bytes
+if __name__ == "__main__":
+    server = HTTPServer(("127.0.0.1", 8000), ChronosHandler)
 
-client_socket.sendall(reply)
+    print("Server listening on http://127.0.0.1:8000")
+
+    server.serve_forever()
