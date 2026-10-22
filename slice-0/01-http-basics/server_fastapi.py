@@ -37,12 +37,32 @@ def get_orders(order_id: int):
 def checkout_order(order_id: int):
     if order_id not in orders_db:
         raise HTTPException(status_code=404, detail="order not found")
+    try:
+
+      payment_response = requests.post(
+      "http://127.0.0.1:8001/payments",
+      json={"order_id": order_id },
+      timeout=3
+      )
+      payment_response.raise_for_status()
+
+    except requests.exceptions.Timeout:
+      raise HTTPException(
+        status_code=504,
+        detail="Payment service timed out"
+        )
     
-    payment_response = requests.post(
-    "http://127.0.0.1:8001/payments",
-    json={"order_id": order_id },
-    timeout=3
-    )
-  
+    except requests.exceptions.ConnectionError:
+      raise HTTPException(
+        status_code=503,
+        detail="Payment service Unavailable"
+        )
+
+    except requests.exceptions.HTTPError:
+      raise HTTPException(
+        status_code=502,
+        detail="Payment service returned an error"
+        )
+    
     return payment_response.json()
 
