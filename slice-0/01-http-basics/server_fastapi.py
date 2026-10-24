@@ -1,5 +1,7 @@
 import requests
 from fastapi import FastAPI,HTTPException
+from uuid import uuid4
+from event_schema import ChronosEvent
 app = FastAPI()
 
 
@@ -35,6 +37,31 @@ def get_orders(order_id: int):
 
 @app.post("/orders/{order_id}/checkout")
 def checkout_order(order_id: int):
+    run_id = uuid4()
+
+    request_stat = ChronosEvent(
+       run_id = run_id,
+       service_id = "orders",
+       event_type = "REQUEST_START",
+       source = "orders-api",
+       payload = {"order_id": order_id},
+       severity = "INFO"
+    )
+    print(request_stat.model_dump_json())
+
+    service_call = ChronosEvent(
+       run_id = run_id,
+       service_id = "orders",
+       event_type = "SERVICE_CALL",
+       source = "orders-api",
+       payload = {
+          "destination_service" : "payment",
+          "order_id" : order_id
+       },
+       severity = "INFO"
+    )
+    print(service_call.model_dump_json())
+    payment_response.raise_for_status()
     if order_id not in orders_db:
         raise HTTPException(status_code=404, detail="order not found")
     try:
@@ -42,7 +69,7 @@ def checkout_order(order_id: int):
       payment_response = requests.post(
       "http://127.0.0.1:8001/payments",
       json={"order_id": order_id },
-      timeout=3
+      timeout=3 
       )
       payment_response.raise_for_status()
 
