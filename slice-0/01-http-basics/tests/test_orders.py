@@ -22,6 +22,8 @@ def test_order_not_found():
     assert order.status_code == 404
 
 class FakeResponse:
+    status_code = 200
+
     def raise_for_status(self):
         pass
 
@@ -31,6 +33,15 @@ class FakeResponse:
             "payment_status": "approved"
         }
 
+
+class FakeErrorResponse:
+    status_code = 500
+
+    def raise_for_status(self):
+        raise requests.exceptions.HTTPError("Payment returned 500")
+
+    def json(self):
+        return {}
     
 
 
@@ -75,12 +86,7 @@ def test_checkout_payment_timeout(monkeypatch: MonkeyPatch):
     assert response.status_code == 504
     assert response.json()["detail"] == "Payment service timed out"
 
-class FakeErrorResponse:
-    def raise_for_status(self):
-        raise requests.exceptions.HTTPError("Payment returned 500")
 
-    def json(self):
-        return {}
 
 def test_checkout_payment_http_error(monkeypatch: MonkeyPatch):
 
