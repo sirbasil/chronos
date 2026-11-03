@@ -1,8 +1,15 @@
+import os
 import requests
-from fastapi import FastAPI,HTTPException
+from fastapi import FastAPI, HTTPException
 from uuid import uuid4
 from event_schema import ChronosEvent
+
 app = FastAPI()
+
+# Inside Docker Compose this is overridden to http://payment:8001 via the
+# PAYMENT_SERVICE_URL environment variable.  The default keeps local dev and
+# the existing pytest suite working without any environment setup.
+PAYMENT_SERVICE_URL = os.environ.get("PAYMENT_SERVICE_URL", "http://127.0.0.1:8001")
 
 
 orders_db = {101: {
@@ -67,7 +74,7 @@ def checkout_order(order_id: int):
 
     try:
         payment_response = requests.post(
-            "http://127.0.0.1:8001/payments",
+            f"{PAYMENT_SERVICE_URL}/payments",
             json={"order_id": order_id},
             timeout=3
         )
