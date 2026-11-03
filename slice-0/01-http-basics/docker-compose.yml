@@ -38,6 +38,11 @@ services:
       - "8000:8000"
     environment:
       PAYMENT_SERVICE_URL: http://payment:8001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-chronos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-chronos}
     depends_on:
       payment:
         condition: service_healthy
