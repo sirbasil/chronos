@@ -4,6 +4,7 @@ import os
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Response
+from pydantic import BaseModel
 import requests
 
 from database import (
@@ -231,3 +232,66 @@ def get_run_events(run_id: UUID):
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
     return get_events_by_run(run_id)
+
+
+# ---------------------------------------------------------------------------
+# Topology models
+# ---------------------------------------------------------------------------
+
+class TopologyNode(BaseModel):
+    id: str
+    service_id: str
+
+
+class TopologyEdge(BaseModel):
+    source: str
+    target: str
+    event_type: str
+
+
+class TopologyResponse(BaseModel):
+    run_id: UUID
+    nodes: list[TopologyNode]
+    edges: list[TopologyEdge]
+
+
+@app.get("/runs/{run_id}/topology", response_model=TopologyResponse)
+def get_run_topology(run_id: UUID):
+    """Reconstruct the observed service topology for a given run from its events."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    events = get_events_by_run(run_id)
+
+    seen_nodes: set[str] = set()
+    nodes: list[TopologyNode] = []
+    seen_edges: set[tuple[str, str]] = set()
+    edges: list[TopologyEdge] = []
+
+    for event in events:
+        # Track every service that produced an event
+        if event.service_id not in seen_nodes:
+            seen_nodes.add(event.service_id)
+            nodes.append(TopologyNode(id=event.service_id, service_id=event.service_id))
+
+        # Build directed edges from SERVICE_CALL events only
+        if event.event_type == "SERVICE_CALL":
+            dest = event.payload.get("destination_service")
+            if dest:
+                # Ensure the destination service appears as a node
+                if dest not in seen_nodes:
+                    seen_nodes.add(dest)
+                    nodes.append(TopologyNode(id=dest, service_id=dest))
+
+                # Deduplicate edges (same source → target pair)
+                edge_key = (event.service_id, dest)
+                if edge_key not in seen_edges:
+                    seen_edges.add(edge_key)
+                    edges.append(TopologyEdge(
+                        source=event.service_id,
+                        target=dest,
+                        event_type="SERVICE_CALL",
+                    ))
+
+    return TopologyResponse(run_id=run_id, nodes=nodes, edges=edges)
