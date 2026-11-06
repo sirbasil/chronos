@@ -1,3 +1,5 @@
+name: 01-http-basics
+
 services:
 
   postgres:
@@ -11,7 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chronos} -d ${POSTGRES_DB:-chronos}"]
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chronos} -d ${POSTGRES_DB:-chronos}" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -22,9 +24,9 @@ services:
       context: .
       dockerfile: Dockerfile.payment
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')\""]
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')\"" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -35,7 +37,7 @@ services:
       context: .
       dockerfile: Dockerfile.orders
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       PAYMENT_SERVICE_URL: http://payment:8001
       POSTGRES_HOST: postgres
@@ -43,13 +45,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-chronos}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-chronos}
+      ENABLE_FAILURE_INJECTION: ${ENABLE_FAILURE_INJECTION:-false}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-01-http-basics}
     depends_on:
       payment:
         condition: service_healthy
       postgres:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/')\""]
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/')\"" ]
       interval: 5s
       timeout: 5s
       retries: 10

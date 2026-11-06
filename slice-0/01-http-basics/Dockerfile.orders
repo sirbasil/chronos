@@ -9,6 +9,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy only the files this service needs
 COPY event_schema.py .
 COPY database.py .
+COPY failure_injector.py .
 COPY server_fastapi.py .
 
 EXPOSE 8000

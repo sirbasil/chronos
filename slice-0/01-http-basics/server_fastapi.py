@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import os
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, Header, HTTPException, Response
 from pydantic import BaseModel
 import requests
 
@@ -16,6 +16,7 @@ from database import (
     update_run_status,
 )
 from event_schema import ChronosEvent
+from failure_injector import inject_failure
 
 
 @asynccontextmanager
@@ -70,13 +71,83 @@ def get_orders(order_id: int):
     }
 
 
-@app.post("/orders/{order_id}/checkout")
-def checkout_order(order_id: int, response: Response):
-    run_id = uuid4()
-    response.headers["X-Run-ID"] = str(run_id)
+class RunResponse(BaseModel):
+    run_id: UUID
+    started_at: datetime
+    status: str
 
-    # 1. Create run record when checkout begins
-    create_run(run_id=run_id, started_at=datetime.now(timezone.utc), status="IN_PROGRESS")
+
+@app.post("/runs", response_model=RunResponse, status_code=201)
+def create_new_run():
+    """Create a new run record. The run_id is generated server-side using uuid4()."""
+    run_id = uuid4()
+    started_at = datetime.now(timezone.utc)
+    run = create_run(run_id=run_id, started_at=started_at, status="IN_PROGRESS")
+    return RunResponse(
+        run_id=run["run_id"],
+        started_at=run["started_at"],
+        status=run["status"],
+    )
+
+
+class FailureInjectionRequest(BaseModel):
+    target: str
+
+
+class FailureInjectionResponse(BaseModel):
+    status: str
+    run_id: UUID
+    target: str
+    action: str
+
+
+@app.post("/runs/{run_id}/failure", response_model=FailureInjectionResponse)
+def inject_run_failure(run_id: UUID, req: FailureInjectionRequest):
+    """Inject a controlled failure into an active run."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run["status"] != "IN_PROGRESS":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run {run_id} is not in progress (status: {run['status']})",
+        )
+
+    result = inject_failure(target=req.target, run_id=run_id)
+    return FailureInjectionResponse(
+        status=result["status"],
+        run_id=run_id,
+        target=result["target"],
+        action=result["action"],
+    )
+
+
+@app.post("/orders/{order_id}/checkout")
+def checkout_order(
+    order_id: int,
+    response: Response,
+    x_run_id: UUID | None = Header(default=None, alias="X-Run-ID"),
+):
+    if x_run_id is not None:
+        run = get_run(x_run_id)
+        if not run:
+            raise HTTPException(
+                status_code=404,
+                detail="Run not found",
+                headers={"X-Run-ID": str(x_run_id)},
+            )
+        if run["status"] != "IN_PROGRESS":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run {x_run_id} is not in progress (status: {run['status']})",
+                headers={"X-Run-ID": str(x_run_id)},
+            )
+        run_id = x_run_id
+    else:
+        run_id = uuid4()
+        create_run(run_id=run_id, started_at=datetime.now(timezone.utc), status="IN_PROGRESS")
+
+    response.headers["X-Run-ID"] = str(run_id)
 
     # 2. REQUEST_START event
     request_start = ChronosEvent(
