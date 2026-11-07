@@ -445,8 +445,8 @@ Retained context suggests raw TCP/HTTP experiments were pushed, but the exact cu
 
 The project has advanced substantially through backend and desktop frontend milestones:
 
-- **M1 — Desktop Instrument Shell (COMPLETE)**: Implemented 1980 Bertone Lamborghini Athon / Volvo Tundra digital instrument cluster visual identity, responsive telemetry panels, phosphor trace instrument, CRT graticule, and service matrix.
-- **M1.5 — Native Desktop Launch Preparation (COMPLETE)**: Tauri 2 desktop shell configuration and local font bundling configured.
+- **M1 — Desktop Instrument Shell (COMPLETE & FROZEN)**: Implemented 1980 Bertone Lamborghini Athon / Volvo Tundra digital instrument cluster visual identity, responsive telemetry panels, phosphor trace instrument, CRT graticule, and service matrix.
+- **M1.5 — Native Desktop Launch Preparation (COMPLETE & FROZEN)**: Tauri 2 desktop shell configuration and local font bundling configured.
 - **M2 — Live Backend Integration & Interactive Topology (COMPLETE & FROZEN)**:
   - React/TypeScript frontend is fully connected to the FastAPI backend (`http://127.0.0.1:8000`).
   - Central typed API client implemented in `frontend/src/services/chronosApi.ts`.
@@ -456,6 +456,27 @@ The project has advanced substantially through backend and desktop frontend mile
   - Interactive service topology visualization uses React Flow (`@xyflow/react`).
   - Frontend communicates with the backend exclusively through REST APIs (no direct frontend-to-database or frontend-to-Docker access).
   - Failure injection controls remain strictly outside the M2 UI.
+
+### Historical Slice Audit and Status Reconciliation (as of November 7, 2026)
+
+To maintain strict fidelity to the roadmap and avoid over-claiming completion, the historical slice progression (Slices 0–5) has been audited against demonstrated acceptance criteria:
+
+- **Slice 0 — Tiny Docker Compose Demo & Event Schema (COMPLETE)**: Canonical event schema defined and validated (`event_schema.py`); Compose stack orchestrates Orders, Payment, and PostgreSQL; verified by `test_event_schema.py`.
+- **Slice 1 — Event Capture via Request Middleware (COMPLETE)**: Normalized event capture for `REQUEST_START`, `SERVICE_CALL`, `RESPONSE`, and `SERVICE_ERROR` across the service path; verified by `test_orders.py`.
+- **Slice 2 — PostgreSQL Persistence & Run Timeline Retrieval (COMPLETE)**: Tables `runs` and `events` in PostgreSQL; events persisted and chronologically retrievable by `run_id`; run catalog listing (`list_runs`); verified by `test_persistence.py` and `test_m2_endpoints.py`.
+- **Slice 3 — Topology REST Endpoint & React Flow UI (COMPLETE & FROZEN)**: REST endpoint `GET /runs/{id}/topology` returns service nodes and directed edges from recorded service-call evidence; React Flow renders the topology with real backend data. Fully delivered across backend and frontend M2.
+- **Slice 4 — Controlled Container-Kill Failure Injection (PARTIAL / IN PROGRESS — Backend Complete, UI in M3)**:
+  - Backend failure injection engine (`failure_injector.py`), API endpoint (`POST /runs/{run_id}/failure`), Docker socket communication, allowlisted Payment target validation, and `FAILURE_INJECTED` event persistence are fully verified via automated tests (`test_failure_injection.py`) and live container tests.
+  - **Audit Correction**: The end-to-end failure experiment user workflow from the frontend interface was intentionally excluded from M2. Because user-facing experiment orchestration is scheduled for **Milestone 3 (M3)**, Slice 4 is **not** marked complete or frozen.
+- **Slice 5 — Timeline Playback & Event Detail Inspection (PARTIAL / IN PROGRESS — Static Complete in M1/M2, Playback in M3)**:
+  - Static event list, timeline scrub bar, and event detail inspector panel are delivered in M1 and integrated with live backend events in M2.
+  - Interactive playback controls (play, pause, step) are scheduled for **Milestone 3 (M3)**.
+
+### Desktop Frontend Milestones Summary
+- **M1 — Desktop Instrument Shell**: COMPLETE & FROZEN.
+- **M1.5 — Native Desktop Launch Preparation**: COMPLETE & FROZEN.
+- **M2 — Live Backend Integration & Interactive Topology**: COMPLETE & FROZEN.
+- **M3 — Failure Experiment Orchestration & Timeline Playback**: NEXT ACTIVITY (Planning & Execution).
 
 ### CORS and Production-Origin Verification
 The backend CORS policy in `backend/server_fastapi.py` is locked down to exact origins:
@@ -508,27 +529,27 @@ The controlling delivery deadline remains **November 15–21, 2026**.
 - [x] Docker Compose starts the required local services and PostgreSQL.
 - [x] The demo client can exercise Orders → Payment.
 - [x] Each run has a unique `run_id` and trace correlation.
-- [x] Event capture emits the agreed schema and event types.
-- [x] Events and run metadata persist in PostgreSQL.
-- [x] Events can be retrieved in stable chronological order.
-- [x] `GET /runs/{id}/topology` returns real service topology.
-- [x] React UI renders the topology via React Flow using real backend data.
-- [x] A deliberately killed local service creates a `FAILURE_INJECTED` record and observable downstream events (backend verified).
-- [ ] M3 UI controls for triggering failure injection and interactive playback.
+- [x] Event capture emits the agreed schema and event types (Slice 0/1).
+- [x] Events and run metadata persist in PostgreSQL (Slice 2).
+- [x] Events can be retrieved in stable chronological order (Slice 2).
+- [x] `GET /runs/{id}/topology` returns real service topology (Slice 3).
+- [x] React UI renders the topology via React Flow using real backend data (Slice 3 / M2).
+- [ ] Controlled failure experiment trigger and causal consequence observation from UI (Slice 4 / M3; backend verified, UI pending).
+- [ ] Interactive timeline playback controls (Slice 5 / M3; static inspection complete in M1/M2, playback controls pending).
 - [x] pytest covers each completed slice and critical API/event behaviors (61 tests passing).
 - [x] No production credentials/secrets are committed.
 - [ ] README includes final architecture, setup, demo script, limitations, and screenshots.
 
 ### Historical milestones from the earlier plan
 
-These were the original intended slices and dates. They are retained for context, not as a reason to ignore the newer deadline:
+These were the original intended slices and dates. They are retained for context and tracking against the November 15–21 MVP deadline:
 
-- **Slice 0, Oct 2–5:** tiny Docker Compose demo and event schema.
-- **Slice 1, Oct 6–11:** event capture via request middleware.
-- **Slice 2, Oct 12–18:** PostgreSQL persistence and retrieving a run timeline; October 18 was the original complete-data-path checkpoint.
-- **Slice 3, Oct 24–31:** topology endpoint and React Flow; REST-only, no WebSockets; originally labelled MVP v0.1.
-- **Slice 4, Nov 1–9:** inject failure by killing a target container and record consequences.
-- **Slice 5, Nov 10–16:** timeline playback and event detail panel, without execution replay or state reconstruction.
+- **Slice 0, Oct 2–5:** tiny Docker Compose demo and event schema (**COMPLETE**).
+- **Slice 1, Oct 6–11:** event capture via request middleware (**COMPLETE**).
+- **Slice 2, Oct 12–18:** PostgreSQL persistence and retrieving a run timeline (**COMPLETE**).
+- **Slice 3, Oct 24–31:** topology endpoint and React Flow; REST-only, no WebSockets; originally labelled MVP v0.1 (**COMPLETE & FROZEN in M2**).
+- **Slice 4, Nov 1–9:** inject failure by killing a target container and record consequences (**PARTIAL / IN PROGRESS — Backend API/engine complete, UI orchestration in M3**).
+- **Slice 5, Nov 10–16:** timeline playback and event detail panel, without execution replay or state reconstruction (**PARTIAL / IN PROGRESS — Static timeline & inspector complete in M1/M2, interactive playback controls in M3**).
 - **Nov 17–22:** integration and reliability in the old plan.
 - **Nov 23–29:** previous hard-freeze/polish window; superseded as the primary delivery target by the newer November 15–21 MVP deadline.
 
@@ -728,6 +749,7 @@ No new feature enters active work merely because it is technically interesting. 
 - **November 7, 2026 — REST-Only Frontend Communication**: The React frontend interacts with the system exclusively through backend REST APIs (`frontend/src/services/chronosApi.ts`). No direct database connections or Docker socket access exist from the UI.
 - **November 7, 2026 — Hardened CORS & Origin Policy**: Backend CORS explicitly allows `http://localhost:1420`, `http://127.0.0.1:1420`, and `http://tauri.localhost` with `allow_credentials=False`. No wildcard origins allowed. Preflight and health checks verified.
 - **November 7, 2026 — Desktop Release Verification Boundary**: Distinction maintained between M2 code completion and standalone release readiness. Packaged Windows Tauri application binary compilation and launch are recorded as a pending desktop release verification task.
+- **November 7, 2026 — Roadmap Slice Audit & Status Correction**: Audited historical Slices 0–5 against demonstrated acceptance criteria. Slices 0, 1, 2, and 3 are COMPLETE (with Slice 3 delivered across backend and frontend M2). Slice 4 is PARTIAL (backend container-kill API, Docker socket integration, and persistence verified; user-facing experiment orchestration in the UI is deferred to M3). Slice 5 is PARTIAL (static timeline inspection delivered; interactive playback controls deferred to M3). Milestones M1, M1.5, and M2 remain COMPLETE & FROZEN. Next activity is M3 Planning. Controlling MVP target remains November 15–21, 2026.
 
 ### Questions resolved in M1/M1.5/M2
 
