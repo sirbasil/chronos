@@ -1,13 +1,20 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+import logging
 import os
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
+from auth import (
+    AuthenticatedUser,
+    get_current_user,
+    require_operator_or_admin,
+    validate_cognito_config,
+)
 from database import (
     create_run,
     get_events_by_run,
@@ -20,28 +27,72 @@ from database import (
 from event_schema import ChronosEvent
 from failure_injector import inject_failure
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Initialize database tables and indexes on application startup
     init_db()
+    # Validate Cognito configuration (fails startup in production if missing)
+    validate_cognito_config()
+    # Validate failure controller configuration when failure injection is enabled
+    if os.environ.get("ENABLE_FAILURE_INJECTION", "false").lower() in ("true", "1", "yes"):
+        token = os.environ.get("FAILURE_CONTROLLER_TOKEN", "").strip()
+        if not token:
+            if os.environ.get("APP_ENV", "development").lower() == "production":
+                raise RuntimeError(
+                    "CRITICAL: FAILURE_CONTROLLER_TOKEN must be configured when ENABLE_FAILURE_INJECTION=true"
+                )
+            else:
+                logger.warning(
+                    "FAILURE_CONTROLLER_TOKEN is unconfigured; failure injection calls will fail closed with HTTP 503"
+                )
     yield
 
 
 app = FastAPI(lifespan=lifespan)
 
-ALLOWED_ORIGINS = [
+DEFAULT_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
     "http://localhost:1420",
     "http://127.0.0.1:1420",
     "http://tauri.localhost",
 ]
+
+
+def parse_cors_origins(raw_origins: str | None) -> list[str]:
+    """
+    Parse comma-separated CORS allowed origins from environment variable.
+    Trims whitespace, strips empty items, and explicitly blocks wildcard '*' entries.
+    Falls back to safe default development origins if empty or unconfigured.
+    """
+    if not raw_origins or not raw_origins.strip():
+        return list(DEFAULT_ALLOWED_ORIGINS)
+
+    parsed: list[str] = []
+    for item in raw_origins.split(","):
+        origin = item.strip().rstrip("/")
+        if not origin:
+            continue
+        # Strictly reject wildcard origins to prevent unintended open CORS
+        if origin == "*":
+            continue
+        if origin not in parsed:
+            parsed.append(origin)
+
+    return parsed if parsed else list(DEFAULT_ALLOWED_ORIGINS)
+
+
+ALLOWED_ORIGINS = parse_cors_origins(os.environ.get("CORS_ALLOWED_ORIGINS"))
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Run-ID"],
 )
 
 # Inside Docker Compose this is overridden to http://payment:8001 via the
@@ -91,14 +142,14 @@ def health_check():
 
 
 @app.get("/orders")
-def orders():
+def orders(user: AuthenticatedUser = Depends(get_current_user)):
     return {
         "message": "Orders service",
     }
 
 
 @app.get("/orders/{order_id}")
-def get_orders(order_id: int):
+def get_orders(order_id: int, user: AuthenticatedUser = Depends(get_current_user)):
     if order_id not in orders_db:
         raise HTTPException(status_code=404, detail="order not found")
 
@@ -124,7 +175,7 @@ class RunSummaryResponse(BaseModel):
 
 
 @app.get("/runs", response_model=list[RunSummaryResponse])
-def get_runs(limit: int = 50):
+def get_runs(limit: int = 50, user: AuthenticatedUser = Depends(get_current_user)):
     """List recent runs in reverse chronological order."""
     runs = list_runs(limit=limit)
     return [
@@ -139,7 +190,7 @@ def get_runs(limit: int = 50):
 
 
 @app.get("/runs/{run_id}", response_model=RunSummaryResponse)
-def get_run_by_id(run_id: UUID):
+def get_run_by_id(run_id: UUID, user: AuthenticatedUser = Depends(get_current_user)):
     """Get single run record by ID."""
     run = get_run(run_id)
     if not run:
@@ -153,7 +204,7 @@ def get_run_by_id(run_id: UUID):
 
 
 @app.post("/runs", response_model=RunResponse, status_code=201)
-def create_new_run():
+def create_new_run(user: AuthenticatedUser = Depends(get_current_user)):
     """Create a new run record. The run_id is generated server-side using uuid4()."""
     run_id = uuid4()
     started_at = datetime.now(timezone.utc)
@@ -177,7 +228,11 @@ class FailureInjectionResponse(BaseModel):
 
 
 @app.post("/runs/{run_id}/failure", response_model=FailureInjectionResponse)
-def inject_run_failure(run_id: UUID, req: FailureInjectionRequest):
+def inject_run_failure(
+    run_id: UUID,
+    req: FailureInjectionRequest,
+    user: AuthenticatedUser = Depends(require_operator_or_admin),
+):
     """Inject a controlled failure into an active run."""
     run = get_run(run_id)
     if not run:
@@ -202,6 +257,7 @@ def checkout_order(
     order_id: int,
     response: Response,
     x_run_id: UUID | None = Header(default=None, alias="X-Run-ID"),
+    user: AuthenticatedUser = Depends(get_current_user),
 ):
     if x_run_id is not None:
         run = get_run(x_run_id)
@@ -373,7 +429,7 @@ def checkout_order(
 
 
 @app.get("/runs/{run_id}/events", response_model=list[ChronosEvent])
-def get_run_events(run_id: UUID):
+def get_run_events(run_id: UUID, user: AuthenticatedUser = Depends(get_current_user)):
     run = get_run(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Run not found")
@@ -402,7 +458,7 @@ class TopologyResponse(BaseModel):
 
 
 @app.get("/runs/{run_id}/topology", response_model=TopologyResponse)
-def get_run_topology(run_id: UUID):
+def get_run_topology(run_id: UUID, user: AuthenticatedUser = Depends(get_current_user)):
     """Reconstruct the observed service topology for a given run from its events."""
     run = get_run(run_id)
     if not run:

@@ -1,4 +1,4 @@
 services:
   orders:
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      ENABLE_FAILURE_INJECTION: "true"

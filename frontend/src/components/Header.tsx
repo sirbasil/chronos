@@ -18,6 +18,8 @@ interface HeaderProps {
   inspectorOpen: boolean;
   onToggleInspector: () => void;
   onSelectInspectorTarget: (target: InspectorTarget) => void;
+  user?: { username: string; email?: string } | null;
+  onSignOut?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -34,6 +36,8 @@ export const Header: React.FC<HeaderProps> = ({
   inspectorOpen,
   onToggleInspector,
   onSelectInspectorTarget,
+  user,
+  onSignOut,
 }) => {
   const getBackendStatusBadge = () => {
     if (mode === 'PREVIEW') {
@@ -196,6 +200,28 @@ export const Header: React.FC<HeaderProps> = ({
             DOCKER: <span className="text-[#4ade80] font-bold">READY</span>
           </span>
         </button>
+
+        {/* Authenticated Operator Pod */}
+        {user ? (
+          <div className="flex items-center gap-2 px-2.5 py-1 bg-[#040604] border border-chrono-grid shadow-sm">
+            <span className="w-2 h-2 rounded-full bg-[#22c55e] shadow-[0_0_6px_#22c55e]" />
+            <span
+              className="font-mono text-[10px] text-chrono-text max-w-[130px] truncate"
+              title={user.email || user.username}
+            >
+              {user.email || user.username}
+            </span>
+            {onSignOut && (
+              <button
+                onClick={onSignOut}
+                className="ml-1 text-[9px] font-mono px-1.5 py-0.5 bg-[#190c0c] border border-chrono-red/60 text-chrono-red hover:bg-chrono-red hover:text-black transition-colors"
+                title="Sign out of Cognito session"
+              >
+                SIGN OUT
+              </button>
+            )}
+          </div>
+        ) : null}
 
         {/* Separator */}
         <div className="w-[1px] h-6 bg-chrono-grid mx-0.5" />

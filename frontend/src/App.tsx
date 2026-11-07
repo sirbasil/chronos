@@ -20,7 +20,8 @@ import { MonitorView } from './components/monitor/MonitorView';
 import { TopologyView } from './components/views/TopologyView';
 import { RunsView } from './components/views/RunsView';
 import { UnimplementedView } from './components/views/UnimplementedView';
-import { AlertTriangle, RefreshCw, Radio } from 'lucide-react';
+import { AlertTriangle, RefreshCw, Radio, Lock, KeyRound } from 'lucide-react';
+import { AuthProvider, useAuth } from './auth/AuthContext';
 
 const FALLBACK_EMPTY_RUN: ChronosRun = {
   run_id: '00000000-0000-0000-0000-000000000000',
@@ -32,7 +33,9 @@ const FALLBACK_EMPTY_RUN: ChronosRun = {
   events: [],
 };
 
-export const App: React.FC = () => {
+const CockpitApp: React.FC = () => {
+  const { status: authStatus, user, error: authError, signIn, signOut } = useAuth();
+
   // Mode & Connection States
   const [mode, setMode] = useState<AppMode>('LIVE');
   const [connectionState, setConnectionState] = useState<BackendConnectionState>('CONNECTING');
@@ -301,6 +304,121 @@ export const App: React.FC = () => {
 
   const isDisconnected = mode === 'LIVE' && connectionState === 'DISCONNECTED';
 
+  if (authStatus === 'LOADING') {
+    return (
+      <div className="flex flex-col h-screen bg-[#020402] text-chrono-text font-mono items-center justify-center p-6 select-none">
+        <div className="max-w-md w-full bg-[#070b05] border border-chrono-grid p-6 text-center space-y-4 shadow-[0_0_20px_rgba(0,0,0,0.8)]">
+          <div className="w-3 h-8 bg-chrono-phosphor mx-auto shadow-[0_0_12px_#b8ff00] animate-pulse" />
+          <div className="font-ui font-bold text-sm tracking-widest text-chrono-phosphor drop-shadow-[0_0_6px_rgba(184,255,0,0.6)]">
+            CHRONOS // AUTHENTICATION GATEWAY
+          </div>
+          <div className="text-xs text-chrono-muted animate-pulse">
+            SYNCHRONIZING OPERATOR SESSION...
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'CONFIG_ERROR' && mode === 'LIVE') {
+    return (
+      <div className="flex flex-col h-screen bg-[#020402] text-chrono-text font-mono items-center justify-center p-6 select-none">
+        <div className="max-w-lg w-full bg-[#070b05] border border-chrono-amber/80 p-6 space-y-4 shadow-[0_0_24px_rgba(255,158,0,0.2)]">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-6 h-6 text-chrono-amber animate-pulse" />
+            <div className="font-ui font-bold text-sm tracking-widest text-chrono-amber">
+              SECURITY CONFIGURATION WARNING
+            </div>
+          </div>
+          <div className="text-xs text-chrono-text leading-relaxed">
+            Amazon Cognito environment variables (<code className="text-chrono-phosphor">VITE_COGNITO_USER_POOL_ID</code>, <code className="text-chrono-phosphor">VITE_COGNITO_USER_POOL_CLIENT_ID</code>, <code className="text-chrono-phosphor">VITE_COGNITO_REGION</code>) are not configured in this client bundle.
+          </div>
+          <div className="p-3 bg-[#030502] border border-chrono-grid text-[10px] text-chrono-muted space-y-1">
+            <div>TARGET POOL: ap-south-1_tDVeeHq0g (chronos-users)</div>
+            <div>CLIENT ID: 4268fo6vpodgv8dt37tim2aec3</div>
+            <div>STATUS: UNCONFIGURED CLIENT ENVIRONMENT</div>
+          </div>
+          <div className="flex items-center justify-between pt-2">
+            <span className="text-[10px] text-chrono-muted">Explore offline without credentials:</span>
+            <button
+              onClick={() => handleToggleMode('PREVIEW')}
+              className="flex items-center gap-2 px-4 py-2 bg-[#1c1407] border border-chrono-amber text-chrono-amber font-mono text-xs font-bold hover:bg-chrono-amber hover:text-black transition-colors"
+            >
+              <Radio className="w-3.5 h-3.5" />
+              SWITCH TO PREVIEW MODE
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (authStatus === 'UNAUTHENTICATED' && mode === 'LIVE') {
+    return (
+      <div className="flex flex-col h-screen bg-[#020402] text-chrono-text font-mono items-center justify-center p-6 select-none">
+        <div className="max-w-lg w-full bg-[#070b05] border border-chrono-phosphor/80 p-8 space-y-6 shadow-[0_0_30px_rgba(184,255,0,0.15)] relative">
+          <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-chrono-phosphor via-transparent to-chrono-phosphor" />
+
+          <div className="flex items-center gap-3">
+            <div className="w-2.5 h-8 bg-chrono-phosphor shadow-[0_0_10px_#b8ff00]" />
+            <div>
+              <div className="font-ui font-bold text-base tracking-widest text-chrono-phosphor drop-shadow-[0_0_6px_rgba(184,255,0,0.6)]">
+                CHRONOS // COCKPIT ACCESS
+              </div>
+              <div className="text-[10px] text-chrono-muted tracking-wider">
+                DISTRIBUTED OBSERVABILITY & FAILURE INJECTION PLATFORM
+              </div>
+            </div>
+          </div>
+
+          <div className="p-4 bg-[#030502] border border-chrono-grid/80 space-y-2 text-xs">
+            <div className="flex items-center gap-2 text-chrono-phosphor font-bold text-[11px] mb-1">
+              <Lock className="w-3.5 h-3.5" />
+              <span>AUTHENTICATION REQUIRED</span>
+            </div>
+            <div className="text-chrono-muted text-[11px] leading-relaxed">
+              This terminal is connected to an authenticated distributed cluster. You must authenticate via Amazon Cognito Managed Login to access live telemetry, active runs, and fault injection capabilities.
+            </div>
+            <div className="pt-2 border-t border-chrono-grid/50 grid grid-cols-2 gap-2 text-[10px] text-chrono-muted">
+              <div>USER POOL: <span className="text-chrono-text">ap-south-1_tDVeeHq0g</span></div>
+              <div>CLIENT: <span className="text-chrono-text">chronos-web-client</span></div>
+              <div>AUTH FLOW: <span className="text-chrono-text">PKCE Authorization Code</span></div>
+              <div>REGION: <span className="text-chrono-text">ap-south-1</span></div>
+            </div>
+          </div>
+
+          {authError && (
+            <div className="p-3 bg-[#190c0c] border border-chrono-red text-chrono-red text-xs flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+              <span>{authError}</span>
+            </div>
+          )}
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={signIn}
+              className="w-full flex items-center justify-center gap-2 px-5 py-3 bg-[#12220f] border-2 border-chrono-phosphor text-chrono-phosphor font-mono text-xs font-bold tracking-widest hover:bg-chrono-phosphor hover:text-black transition-all shadow-[0_0_15px_rgba(184,255,0,0.3)] cursor-pointer"
+            >
+              <KeyRound className="w-4 h-4" />
+              [ INITIATE SECURE SIGN IN ]
+            </button>
+
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-[10px] text-chrono-muted">Explore offline telemetry:</span>
+              <button
+                onClick={() => handleToggleMode('PREVIEW')}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1c1407] border border-chrono-amber/80 text-chrono-amber font-mono text-[11px] font-bold hover:bg-chrono-amber hover:text-black transition-colors"
+              >
+                <Radio className="w-3 h-3" />
+                EXPLORE DEMO PREVIEW
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col w-screen h-screen overflow-hidden bg-chrono-bg select-none">
       {/* 1. Cockpit Header Bar */}
@@ -321,6 +439,8 @@ export const App: React.FC = () => {
           setInspectorTarget(target);
           setInspectorOpen(true);
         }}
+        user={user}
+        onSignOut={signOut}
       />
 
       {/* 2. Main Middle Workspace: Left Persistent Navigation Rail + Center Instrument + Right Inspector */}
@@ -434,6 +554,14 @@ export const App: React.FC = () => {
         mode={mode}
       />
     </div>
+  );
+};
+
+export const App: React.FC = () => {
+  return (
+    <AuthProvider>
+      <CockpitApp />
+    </AuthProvider>
   );
 };
 

@@ -1,46 +1,52 @@
 """
-Tests for Controlled Failure Injection.
-Verifies container resolution, allowlist validation, Docker client error handling,
-failure injection execution, database persistence failure, Docker client cleanup,
-and event correlation. All Docker interactions are strictly mocked.
+Tests for Controlled Failure Injection in the Orders Service.
+Verifies target allowlist validation, internal failure-controller delegation,
+error handling (timeouts, connection errors, controller errors, DB persistence failures),
+and event correlation. All external communication is strictly mocked.
 """
 
 from unittest.mock import MagicMock, patch
 from uuid import UUID, uuid4
 
-import docker.errors
 import pytest
+import requests.exceptions
 from fastapi.testclient import TestClient
 
 from database import create_run, get_events_by_run, get_run, update_run_status
 from server_fastapi import app
 
-client = TestClient(app, raise_server_exceptions=True)
+client = TestClient(app, raise_server_exceptions=False)
+
+TEST_CONTROLLER_TOKEN = "test-internal-token-12345"
+DEFAULT_TEST_ENV = {
+    "ENABLE_FAILURE_INJECTION": "true",
+    "FAILURE_CONTROLLER_TOKEN": TEST_CONTROLLER_TOKEN,
+    "FAILURE_CONTROLLER_URL": "http://failure-controller:8002",
+}
 
 
-# ---------------------------------------------------------------------------
-# Helpers & Mocks
-# ---------------------------------------------------------------------------
-
-def _mock_container(
+def _mock_controller_response(
+    status_code: int = 200,
     container_id: str = "payment_cid_123",
-    name: str = "01-http-basics-payment-1",
-    status: str = "running",
+    container_name: str = "01-http-basics-payment-1",
     project: str = "01-http-basics",
-    service: str = "payment",
+    detail: str | None = None,
 ):
-    """Create a mock Docker container with specified attributes and labels."""
-    mock = MagicMock()
-    mock.id = container_id
-    mock.name = name
-    mock.status = status
-    mock.labels = {
-        "com.docker.compose.project": project,
-        "com.docker.compose.service": service,
-    }
-    mock.reload = MagicMock()
-    mock.kill = MagicMock()
-    return mock
+    """Create a mock HTTP response from the internal failure-controller."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = status_code
+    if status_code == 200:
+        mock_resp.json.return_value = {
+            "status": "injected",
+            "target": "payment",
+            "action": "kill",
+            "container_id": container_id,
+            "container_name": container_name,
+            "compose_project": project,
+        }
+    else:
+        mock_resp.json.return_value = {"detail": detail or f"Controller error {status_code}"}
+    return mock_resp
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +93,7 @@ class TestFailureInjectionValidation:
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
             for bad_target in ["postgres", "orders", "docker_desktop", "unknown"]:
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": bad_target})
                 assert resp.status_code == 400
@@ -96,7 +102,7 @@ class TestFailureInjectionValidation:
     def test_injection_unknown_run_404(self):
         """Non-existent run_id must return 404 Not Found."""
         fake_id = str(uuid4())
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
             resp = client.post(f"/runs/{fake_id}/failure", json={"target": "payment"})
             assert resp.status_code == 404
             assert "not found" in resp.json()["detail"].lower()
@@ -107,213 +113,206 @@ class TestFailureInjectionValidation:
         run_id = UUID(run["run_id"])
         update_run_status(run_id, status="COMPLETED")
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
             resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
             assert resp.status_code == 409
             assert "not in progress" in resp.json()["detail"].lower()
 
-
-# ---------------------------------------------------------------------------
-# 3. Docker Resolution, Reload, and Error Handling Tests
-# ---------------------------------------------------------------------------
-
-class TestDockerResolutionAndErrors:
-    """Tests for Docker API interactions, container state, reload handling, and client cleanup."""
-
-    def test_docker_daemon_unavailable_503(self):
-        """DockerException during connection must return 503 Service Unavailable."""
+    def test_injection_unconfigured_controller_token_503(self):
+        """When FAILURE_CONTROLLER_TOKEN is missing, return 503."""
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
+        with patch.dict(
+            "os.environ",
+            {
+                "ENABLE_FAILURE_INJECTION": "true",
+                "FAILURE_CONTROLLER_TOKEN": "",
+            },
+        ):
+            resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+            assert resp.status_code == 503
+            assert "unconfigured" in resp.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# 3. Failure Controller Delegation & Error Handling Tests
+# ---------------------------------------------------------------------------
+
+class TestControllerDelegationAndErrors:
+    """Tests for communication with internal failure-controller."""
+
+    def test_controller_service_unavailable_503(self):
+        """ConnectionError to controller must return 503 Service Unavailable."""
+        run = client.post("/runs").json()
+        run_id = run["run_id"]
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
             with patch(
-                "failure_injector.get_docker_client",
-                side_effect=docker.errors.DockerException("Daemon socket missing"),
+                "failure_injector.requests.post",
+                side_effect=requests.exceptions.ConnectionError("Failed to resolve failure-controller"),
             ):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 503
                 assert "unavailable" in resp.json()["detail"].lower()
 
-    def test_container_not_found_404(self):
-        """If no matching container is found in the project, return 404."""
+    def test_controller_timeout_504(self):
+        """Timeout connecting or reading from controller must return 504 Gateway Timeout."""
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = []
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch(
+                "failure_injector.requests.post",
+                side_effect=requests.exceptions.Timeout("Read timed out"),
+            ):
+                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp.status_code == 504
+                assert "timed out" in resp.json()["detail"].lower()
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+    def test_controller_invalid_credentials_502(self):
+        """If controller rejects our credentials (401), Orders returns 502 Bad Gateway."""
+        run = client.post("/runs").json()
+        run_id = run["run_id"]
+
+        mock_resp = _mock_controller_response(status_code=401, detail="Unauthorized")
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
+                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp.status_code == 502
+                assert "authentication failed" in resp.json()["detail"].lower()
+
+    def test_container_not_found_forwarded_404(self):
+        """If controller returns 404 (no container found), Orders forwards 404."""
+        run = client.post("/runs").json()
+        run_id = run["run_id"]
+
+        mock_resp = _mock_controller_response(
+            status_code=404, detail="No container found for service 'payment'"
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 404
                 assert "no container found" in resp.json()["detail"].lower()
-                mock_client.close.assert_called_once()
 
-    def test_ambiguous_container_match_409(self):
-        """If multiple containers match the project/service filter, return 409."""
+    def test_ambiguous_or_stopped_container_forwarded_409(self):
+        """If controller returns 409 (ambiguous or not running), Orders forwards 409."""
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        mock_c1 = _mock_container(container_id="c1")
-        mock_c2 = _mock_container(container_id="c2")
-
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c1, mock_c2]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
-                assert resp.status_code == 409
-                assert "ambiguous" in resp.json()["detail"].lower()
-                mock_client.close.assert_called_once()
-
-    def test_label_project_verification_failure_502(self):
-        """If container labels do not match expected project/service, return 502."""
-        run = client.post("/runs").json()
-        run_id = run["run_id"]
-
-        # Container belongs to a different project
-        mock_c = _mock_container(project="other-project")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
-                assert resp.status_code == 502
-                assert "verification failed" in resp.json()["detail"].lower()
-                mock_client.close.assert_called_once()
-
-    def test_already_stopped_container_409(self):
-        """Already stopped container must return 409 and not call kill()."""
-        run = client.post("/runs").json()
-        run_id = run["run_id"]
-
-        mock_c = _mock_container(status="exited")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        mock_resp = _mock_controller_response(
+            status_code=409, detail="Container is not running"
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 409
                 assert "not running" in resp.json()["detail"].lower()
-                mock_c.kill.assert_not_called()
-                mock_client.close.assert_called_once()
 
-    def test_reload_docker_connection_failure_does_not_call_kill_503(self):
-        """DockerException during container.reload() must return 503 and abort kill()."""
+    def test_docker_daemon_unavailable_from_controller_forwarded_503(self):
+        """If controller returns 503 (Docker daemon unavailable), Orders forwards 503."""
         run = client.post("/runs").json()
-        run_id = UUID(run["run_id"])
+        run_id = run["run_id"]
 
-        mock_c = _mock_container(status="running")
-        mock_c.reload.side_effect = docker.errors.DockerException("Connection to Docker lost during reload")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        mock_resp = _mock_controller_response(
+            status_code=503, detail="Docker daemon unavailable"
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 503
-                assert "unavailable" in resp.json()["detail"].lower()
-                mock_c.kill.assert_not_called()
-                mock_client.close.assert_called_once()
+                assert "daemon unavailable" in resp.json()["detail"].lower()
 
-        # Confirm no FAILURE_INJECTED event was saved
-        events = get_events_by_run(run_id)
-        assert len(events) == 0
-
-    def test_reload_docker_api_error_does_not_call_kill_502(self):
-        """docker.errors.APIError during container.reload() must return 502 and abort kill()."""
-        run = client.post("/runs").json()
-        run_id = UUID(run["run_id"])
-
-        mock_c = _mock_container(status="running")
-        mock_c.reload.side_effect = docker.errors.APIError("Docker daemon returned HTTP 500 on inspect")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
-                assert resp.status_code == 502
-                assert "api error" in resp.json()["detail"].lower()
-                mock_c.kill.assert_not_called()
-                mock_client.close.assert_called_once()
-
-        # Confirm no FAILURE_INJECTED event was saved
-        events = get_events_by_run(run_id)
-        assert len(events) == 0
-
-    def test_reload_generic_failure_does_not_call_kill_502(self):
-        """Unexpected exception during container.reload() must fail closed (502) and abort kill()."""
-        run = client.post("/runs").json()
-        run_id = UUID(run["run_id"])
-
-        mock_c = _mock_container(status="running")
-        mock_c.reload.side_effect = RuntimeError("Corrupted container json metadata")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
-                assert resp.status_code == 502
-                assert "failed to verify" in resp.json()["detail"].lower()
-                mock_c.kill.assert_not_called()
-                mock_client.close.assert_called_once()
-
-        # Confirm no FAILURE_INJECTED event was saved
-        events = get_events_by_run(run_id)
-        assert len(events) == 0
-
-    def test_docker_client_cleanup_on_success_and_failure(self):
-        """Docker client.close() must be called in both successful and failing flows."""
+    def test_docker_api_or_label_error_from_controller_forwarded_502(self):
+        """If controller returns 502, Orders forwards 502."""
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        mock_c = _mock_container(status="running")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        # Success case
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        mock_resp = _mock_controller_response(
+            status_code=502, detail="Failed to kill container"
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
-                assert resp.status_code == 200
-                mock_client.close.assert_called_once()
-
-        # Failure case (kill raises APIError)
-        mock_client.reset_mock()
-        mock_c.kill.side_effect = docker.errors.APIError("Kill failed")
-        run2 = client.post("/runs").json()
-        run_id2 = run2["run_id"]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                resp = client.post(f"/runs/{run_id2}/failure", json={"target": "payment"})
                 assert resp.status_code == 502
-                mock_client.close.assert_called_once()
 
     def test_db_persistence_failure_after_successful_kill(self):
-        """If database save_event fails after container.kill(), return 500 and log critical error."""
+        """If database save_event fails after all retries, return 500 with diagnostic correlation info."""
         run = client.post("/runs").json()
         run_id = run["run_id"]
 
-        mock_c = _mock_container(status="running")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
-
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
-                with patch("failure_injector.save_event", side_effect=RuntimeError("DB write failed")):
+        mock_resp = _mock_controller_response(
+            status_code=200,
+            container_id="payment_cid_fail",
+            container_name="payment_name_fail",
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
+                with patch("failure_injector.save_event", side_effect=RuntimeError("DB write failed")) as mock_save:
                     resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                     assert resp.status_code == 500
-                    assert "persistence failed" in resp.json()["detail"].lower()
-                    # Verify kill was called before the persistence failure
-                    mock_c.kill.assert_called_once()
-                    # Verify Docker client was still closed
-                    mock_client.close.assert_called_once()
+                    detail = resp.json()["detail"]
+                    assert "persistence failed" in detail.lower()
+                    assert "payment_cid_fail" in detail
+                    assert "payment_name_fail" in detail
+                    assert "3 attempts" in detail
+                    assert mock_save.call_count == 3
+
+    def test_db_persistence_retry_succeeds_on_transient_failure(self):
+        """If database save_event fails transiently on first attempt but succeeds on second, return 200."""
+        run = client.post("/runs").json()
+        run_id = run["run_id"]
+
+        mock_resp = _mock_controller_response(
+            status_code=200,
+            container_id="payment_cid_retry",
+            container_name="payment_name_retry",
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
+                with patch(
+                    "failure_injector.save_event",
+                    side_effect=[RuntimeError("Connection blip"), None],
+                ) as mock_save:
+                    resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                    assert resp.status_code == 200
+                    assert resp.json()["status"] == "injected"
+                    assert mock_save.call_count == 2
+
+    def test_duplicate_failure_injection_rejected_with_409(self):
+        """Calling failure injection twice on the same run must reject the second call with 409."""
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        mock_resp = _mock_controller_response(status_code=200)
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
+                # First injection succeeds and records event in DB
+                resp1 = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp1.status_code == 200
+
+                # Second injection must be blocked by duplicate pre-check
+                resp2 = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp2.status_code == 409
+                assert "already recorded" in resp2.json()["detail"].lower()
+
+    def test_controller_409_does_not_speculatively_persist_event(self):
+        """If controller returns 409 (already stopped), Orders forwards 409 and does NOT persist an event."""
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        mock_resp = _mock_controller_response(
+            status_code=409, detail="Container is not running (status: exited)"
+        )
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
+                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp.status_code == 409
+
+        # Ensure no speculative FAILURE_INJECTED event was written
+        events = get_events_by_run(run_id)
+        assert len(events) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -323,17 +322,19 @@ class TestDockerResolutionAndErrors:
 class TestCorrelatedFailureExperiment:
     """Tests for end-to-end failure injection and event correlation under a single run_id."""
 
-    def test_successful_injection_kills_only_payment_and_persists_event(self):
-        """Successful injection calls kill() on Payment and records FAILURE_INJECTED."""
+    def test_successful_injection_calls_controller_and_persists_event(self):
+        """Successful injection records FAILURE_INJECTED in DB upon controller 200 confirmation."""
         run = client.post("/runs").json()
         run_id = UUID(run["run_id"])
 
-        mock_c = _mock_container(container_id="c_pay_1", name="01-http-basics-payment-1", status="running")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
+        mock_resp = _mock_controller_response(
+            status_code=200,
+            container_id="c_pay_1",
+            container_name="01-http-basics-payment-1",
+        )
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp) as mock_post:
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 200
                 data = resp.json()
@@ -342,8 +343,12 @@ class TestCorrelatedFailureExperiment:
                 assert data["action"] == "kill"
                 # Public API response MUST NOT expose container_id
                 assert "container_id" not in data
-                mock_c.kill.assert_called_once()
-                mock_client.close.assert_called_once()
+
+                # Verify internal request was sent with Bearer token
+                mock_post.assert_called_once()
+                call_args = mock_post.call_args
+                assert "Authorization" in call_args.kwargs["headers"]
+                assert call_args.kwargs["headers"]["Authorization"] == f"Bearer {TEST_CONTROLLER_TOKEN}"
 
         # Verify FAILURE_INJECTED is in database and retains internal container_id
         events = get_events_by_run(run_id)
@@ -364,12 +369,12 @@ class TestCorrelatedFailureExperiment:
         run = client.post("/runs").json()
         run_id = UUID(run["run_id"])
 
-        mock_c = _mock_container(container_id="secret_container_abc", status="running")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
+        mock_resp = _mock_controller_response(
+            status_code=200, container_id="secret_container_abc"
+        )
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert resp.status_code == 200
                 body = resp.json()
@@ -411,19 +416,16 @@ class TestCorrelatedFailureExperiment:
         assert run_resp.status_code == 201
         run_id = UUID(run_resp.json()["run_id"])
 
-        # Step 2: Inject failure
-        mock_c = _mock_container(container_id="c_pay_42", status="running")
-        mock_client = MagicMock()
-        mock_client.containers.list.return_value = [mock_c]
+        # Step 2: Inject failure via internal controller
+        mock_resp = _mock_controller_response(status_code=200, container_id="c_pay_42")
 
-        with patch.dict("os.environ", {"ENABLE_FAILURE_INJECTION": "true"}):
-            with patch("failure_injector.get_docker_client", return_value=mock_client):
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", return_value=mock_resp):
                 inj_resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
                 assert inj_resp.status_code == 200
                 assert "container_id" not in inj_resp.json()
 
         # Step 3: Execute checkout with X-Run-ID header, simulating dead Payment container
-        import requests.exceptions
         with patch("server_fastapi.requests.post", side_effect=requests.exceptions.ConnectionError("Connection refused")):
             checkout_resp = client.post("/orders/101/checkout", headers={"X-Run-ID": str(run_id)})
             assert checkout_resp.status_code == 503

@@ -1,3 +1,5 @@
+import { fetchAuthSession } from 'aws-amplify/auth';
+import { isCognitoConfigured } from '../auth/amplifyConfig';
 import {
   BackendHealth,
   RunSummaryResponse,
@@ -6,10 +8,18 @@ import {
 } from '../types/api';
 import { ChronosEvent, ChronosRun, ServiceSummary } from '../types/events';
 
-let API_BASE_URL = 'http://127.0.0.1:8000';
+const resolveInitialApiBaseUrl = (): string => {
+  const envUrl = import.meta.env?.VITE_API_BASE_URL;
+  if (typeof envUrl === 'string' && envUrl.trim().length > 0) {
+    return envUrl.trim().replace(/\/+$/, '');
+  }
+  return 'http://127.0.0.1:8000';
+};
+
+let API_BASE_URL = resolveInitialApiBaseUrl();
 
 export const setApiBaseUrl = (url: string) => {
-  API_BASE_URL = url.replace(/\/+$/, '');
+  API_BASE_URL = url.trim().replace(/\/+$/, '');
 };
 
 export const getApiBaseUrl = (): string => API_BASE_URL;
@@ -28,13 +38,29 @@ const fetchWithTimeout = async (
 
   try {
     const url = `${API_BASE_URL}${endpoint}`;
+
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...((options.headers as Record<string, string>) || {}),
+    };
+
+    // Attach Cognito Bearer access token if authenticated
+    if (isCognitoConfigured() && !headers['Authorization']) {
+      try {
+        const session = await fetchAuthSession();
+        const token = session.tokens?.accessToken?.toString();
+        if (token) {
+          headers['Authorization'] = `Bearer ${token}`;
+        }
+      } catch {
+        // Unauthenticated or offline: proceed without token
+      }
+    }
+
     const res = await fetch(url, {
       ...options,
       signal: combinedSignal,
-      headers: {
-        Accept: 'application/json',
-        ...(options.headers || {}),
-      },
+      headers,
     });
     return res;
   } catch (err: unknown) {
@@ -69,9 +95,17 @@ const handleResponse = async <T>(res: Response): Promise<T> => {
     } catch {
       // ignore
     }
+
+    let code = `HTTP_${res.status}`;
+    if (res.status === 401) {
+      code = 'UNAUTHORIZED';
+    } else if (res.status === 403) {
+      code = 'FORBIDDEN';
+    }
+
     const error: ApiError = {
       status: res.status,
-      code: `HTTP_${res.status}`,
+      code,
       message,
     };
     throw error;

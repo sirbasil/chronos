@@ -47,6 +47,18 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-chronos}
       ENABLE_FAILURE_INJECTION: ${ENABLE_FAILURE_INJECTION:-false}
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-01-http-basics}
+      FAILURE_CONTROLLER_URL: ${FAILURE_CONTROLLER_URL:-http://failure-controller:8002}
+      FAILURE_CONTROLLER_TOKEN: ${FAILURE_CONTROLLER_TOKEN:-}
+      APP_ENV: ${APP_ENV:-development}
+      COGNITO_REGION: ${COGNITO_REGION:-ap-south-1}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-ap-south-1_tDVeeHq0g}
+      COGNITO_USER_POOL_CLIENT_ID: ${COGNITO_USER_POOL_CLIENT_ID:-4268fo6vpodgv8dt37tim2aec3}
+      COGNITO_ADMIN_GROUP: ${COGNITO_ADMIN_GROUP:-chronos-admins}
+      COGNITO_OPERATOR_GROUP: ${COGNITO_OPERATOR_GROUP:-chronos-operators}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost}
+    networks:
+      - default
+      - failure-control
     depends_on:
       payment:
         condition: service_healthy
@@ -58,6 +70,35 @@ services:
       timeout: 5s
       retries: 10
       start_period: 15s
+
+  failure-controller:
+    build:
+      context: ./failure_controller
+      dockerfile: Dockerfile
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-01-http-basics}
+      FAILURE_CONTROLLER_TOKEN: ${FAILURE_CONTROLLER_TOKEN:?FAILURE_CONTROLLER_TOKEN must be configured}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - failure-control
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be configured}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  default:
+    name: 01-http-basics_default
+  failure-control:
+    name: 01-http-basics-failure-control
+    internal: true
 
 volumes:
   postgres_data:

@@ -1,6 +1,6 @@
 from uuid import uuid4
 from fastapi.testclient import TestClient
-from server_fastapi import app
+from server_fastapi import DEFAULT_ALLOWED_ORIGINS, app, parse_cors_origins
 from database import create_run
 
 client = TestClient(app)
@@ -109,3 +109,97 @@ def test_cors_disallows_untrusted_wildcard_origins():
         )
         # FastAPI CORSMiddleware does not return Access-Control-Allow-Origin for disallowed origins
         assert response.headers.get("access-control-allow-origin") is None
+
+
+def test_parse_cors_origins_defaults():
+    assert parse_cors_origins(None) == DEFAULT_ALLOWED_ORIGINS
+    assert parse_cors_origins("") == DEFAULT_ALLOWED_ORIGINS
+    assert parse_cors_origins("   ") == DEFAULT_ALLOWED_ORIGINS
+
+
+def test_parse_cors_origins_custom_and_whitespace():
+    raw = " https://main.d12345.amplifyapp.com, http://localhost:1420/ , , https://chronos.example.com "
+    parsed = parse_cors_origins(raw)
+    assert parsed == [
+        "https://main.d12345.amplifyapp.com",
+        "http://localhost:1420",
+        "https://chronos.example.com",
+    ]
+
+
+def test_parse_cors_origins_rejects_wildcard():
+    # Solo wildcard falls back to safe defaults
+    assert parse_cors_origins("*") == DEFAULT_ALLOWED_ORIGINS
+    assert parse_cors_origins(" * ") == DEFAULT_ALLOWED_ORIGINS
+    # Wildcard in a list is strictly dropped
+    assert parse_cors_origins("*, https://main.example.amplifyapp.com") == [
+        "https://main.example.amplifyapp.com"
+    ]
+
+
+def test_cors_preflight_permitted_headers():
+    """Verify preflight with all explicit permitted headers."""
+    response = client.options(
+        "/runs",
+        headers={
+            "Origin": "http://localhost:1420",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization, Content-Type, Accept, X-Run-ID",
+        },
+    )
+    assert response.status_code == 200
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:1420"
+    allow_headers = response.headers.get("access-control-allow-headers", "").lower()
+    for h in ["authorization", "content-type", "accept", "x-run-id"]:
+        assert h in allow_headers
+
+
+def test_cors_with_configured_amplify_origin():
+    """Verify that a dynamically configured Amplify origin permits CORS requests."""
+    from fastapi import FastAPI
+    from fastapi.middleware.cors import CORSMiddleware
+
+    amplify_origin = "https://main.d123456.amplifyapp.com"
+    test_origins = parse_cors_origins(f"http://localhost:1420, {amplify_origin}")
+
+    test_app = FastAPI()
+    test_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=test_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "Accept", "X-Run-ID"],
+    )
+
+    @test_app.get("/test")
+    def sample():
+        return {"ok": True}
+
+    test_client = TestClient(test_app)
+
+    # OPTIONS preflight
+    options_res = test_client.options(
+        "/test",
+        headers={
+            "Origin": amplify_origin,
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "Authorization, Accept",
+        },
+    )
+    assert options_res.status_code == 200
+    assert options_res.headers.get("access-control-allow-origin") == amplify_origin
+
+    # GET request
+    get_res = test_client.get("/test", headers={"Origin": amplify_origin})
+    assert get_res.status_code == 200
+    assert get_res.headers.get("access-control-allow-origin") == amplify_origin
+
+    # Disallowed origin is rejected
+    untrusted_res = test_client.options(
+        "/test",
+        headers={
+            "Origin": "https://untrusted-attacker.com",
+            "Access-Control-Request-Method": "GET",
+        },
+    )
+    assert untrusted_res.headers.get("access-control-allow-origin") is None
