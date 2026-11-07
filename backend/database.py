@@ -164,6 +164,23 @@ def get_run(run_id: UUID | str) -> dict[str, Any] | None:
             return cur.fetchone()
 
 
+def list_runs(limit: int = 50) -> list[dict[str, Any]]:
+    """Retrieve recent runs ordered by started_at DESC."""
+    with get_db_connection(autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT run_id, started_at, completed_at, status
+                FROM runs
+                ORDER BY started_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+
+
+
 def save_event(event: ChronosEvent) -> None:
     """Persist a single ChronosEvent in PostgreSQL."""
     with get_db_connection(autocommit=True) as conn:

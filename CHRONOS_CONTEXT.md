@@ -4,7 +4,7 @@
 >
 > **Current target:** MVP demo/release during **November 15–21, 2026**.
 >
-> **Last reconstructed:** October 18, 2026.
+> **Last updated:** November 7, 2026 — Milestone 2 (M2) Complete & Frozen (Reconstructed: October 18, 2026).
 >
 > **Repository:** `git@github.com:sirbasil/chronos.git` (branch: `main`, according to retained project context).
 >
@@ -441,9 +441,42 @@ Do not assume the project uses a root-level `~/chronos/.venv`: the observed pack
 
 Retained context suggests raw TCP/HTTP experiments were pushed, but the exact current commit/status was not verified after the chat deletion. Before making structural changes, run `git status`, inspect the current files and recent commits, and preserve experiments rather than overwriting them. The exact existence/content of `server_raw.py` and `server_fastapi.py` should be checked in the real repository.
 
-### Current project maturity assessment
+### Current project maturity assessment (as of November 7, 2026)
 
-Based only on the retained learning discussion, implementation maturity is **earlier than the planned October data-path checkpoint**. The networking foundations and first FastAPI route attempt are practiced; the following are not verified as implemented: multi-container application, Docker Compose setup, normalized event middleware, PostgreSQL storage, topology endpoint, frontend topology, Docker API failure control, and timeline UI. This is a planning baseline, not a judgment on any unseen repository changes.
+The project has advanced substantially through backend and desktop frontend milestones:
+
+- **M1 — Desktop Instrument Shell (COMPLETE)**: Implemented 1980 Bertone Lamborghini Athon / Volvo Tundra digital instrument cluster visual identity, responsive telemetry panels, phosphor trace instrument, CRT graticule, and service matrix.
+- **M1.5 — Native Desktop Launch Preparation (COMPLETE)**: Tauri 2 desktop shell configuration and local font bundling configured.
+- **M2 — Live Backend Integration & Interactive Topology (COMPLETE & FROZEN)**:
+  - React/TypeScript frontend is fully connected to the FastAPI backend (`http://127.0.0.1:8000`).
+  - Central typed API client implemented in `frontend/src/services/chronosApi.ts`.
+  - Live and Preview modes are completely separated; Preview fixtures remain intact for offline visual testing.
+  - Backend connection states, polling, cancellation, stale-request handling, and honest error boundaries are implemented.
+  - Run catalog (`GET /runs`), run details (`GET /runs/{id}`), event timelines (`GET /runs/{id}/events`), event payload inspection, and service topology (`GET /runs/{id}/topology`) consume real backend data.
+  - Interactive service topology visualization uses React Flow (`@xyflow/react`).
+  - Frontend communicates with the backend exclusively through REST APIs (no direct frontend-to-database or frontend-to-Docker access).
+  - Failure injection controls remain strictly outside the M2 UI.
+
+### CORS and Production-Origin Verification
+The backend CORS policy in `backend/server_fastapi.py` is locked down to exact origins:
+- `http://localhost:1420` (Vite dev server)
+- `http://127.0.0.1:1420` (Vite loopback)
+- `http://tauri.localhost` (Windows Tauri 2 production origin)
+- `allow_credentials=False` (frontend does not require credentialed requests; uncredentialed security boundary)
+- No wildcard origins (`"*"`) are permitted.
+- `tauri://localhost` was evaluated and removed as no supported desktop target platform in CHRONOS requires it.
+
+**Verification Results**:
+- Automated test suite: 61 backend pytest tests passed, 1 warning (deprecation).
+- Frontend production build: TypeScript compilation (`tsc`) and Vite production bundle passed cleanly (1621 modules, 0 errors).
+- Live Windows Tauri origin preflight (`OPTIONS` with `Accept` header): HTTP 200 OK with matching CORS headers.
+- Live GET `/health`: HTTP 200 OK from `http://tauri.localhost`.
+- Untrusted origins and removed `tauri://localhost` origin: HTTP 400 Bad Request (`Disallowed CORS origin`), no `Access-Control-Allow-Origin` returned.
+
+### Outstanding Release Verification
+- The production frontend build has passed and live backend CORS compatibility has been verified.
+- **Distinction from Release Readiness**: A packaged Windows Tauri application binary has **NOT** yet been fully compiled, launched, and tested end-to-end against the live backend in a standalone desktop installer/bundle.
+- This is recorded as a separate **pending desktop release verification task**, not as an incomplete M2 implementation item. M2 implementation is complete and frozen.
 
 ---
 
@@ -455,36 +488,36 @@ The latest explicit project constraint is **MVP by the third week of November 20
 
 The compressed schedule is aggressive because the retained implementation evidence only shows networking exercises and the beginning of FastAPI. Scope must stay thin. The goal is not to install the whole stack; it is to get one end-to-end demo working, recorded, and repeatable.
 
-### Recommended re-baseline from October 18
+### Milestone status and roadmap (updated November 7, 2026)
 
-| Window | Focus | Exit condition |
-|---|---|---|
-| **Oct 18–21** | Verify current code; finish FastAPI fundamentals through self-written routes; understand request/response and path parameters | App launches with Uvicorn; `GET /` and `GET /orders` behave as expected; tests/manual checks cover success and missing routes |
-| **Oct 22–27** | Build the thinnest local service chain; introduce Docker Compose as needed, not as a theory course | Client → API → Orders → Payment works once end to end locally |
-| **Oct 28–Nov 2** | Freeze the event contract; capture normalized events and persist them with run metadata in PostgreSQL | A completed run has ordered events that can be fetched by `run_id` |
-| **Nov 3–7** | Build the topology REST endpoint and minimal React/React Flow representation | `GET /runs/{id}/topology` returns real nodes/edges; UI renders the run topology, or a tested API-only topology if UI is behind |
-| **Nov 8–12** | Controlled container-kill failure experiment; record action and downstream consequences | One documented failure experiment is repeatable and its events are persisted |
-| **Nov 13–17** | Timeline UI; interactive play/pause/step only if the data path and failure records are reliable | Preferred: interactive timeline. Minimum fallback: chronological static timeline and event-detail view |
-| **Nov 18–21** | Integration, test fixes, runbook, architecture diagram, clean demo | A fresh environment can be started from documented steps and the entire demo can be repeated |
+| Window | Focus | Status | Exit condition |
+|---|---|---|---|
+| **Oct 18–21** | FastAPI fundamentals through self-written routes | **COMPLETE** | App launches with Uvicorn; routes behave as expected; tests cover success and missing routes |
+| **Oct 22–27** | Thinnest local service chain; Docker Compose | **COMPLETE** | Client → Orders → Payment works end-to-end locally |
+| **Oct 28–Nov 2** | Event contract freeze; PostgreSQL persistence and run metadata | **COMPLETE** | Runs have ordered events persisted and fetchable by `run_id` |
+| **Nov 3–7** | M1 Instrument Shell, M1.5 Desktop Launch, M2 Live Backend Integration & Topology | **COMPLETE & FROZEN** | Real API integration, React Flow topology, run history/detail, event inspection, CORS hardened for Windows Tauri |
+| **Nov 8–12** | M3 Planning & Execution: Failure experiment orchestration & interactive timeline | **NEXT ACTIVITY** | Trigger controlled failure experiments from UI; inspect causal error cascades; interactive timeline playback controls |
+| **Nov 13–17** | End-to-end packaged desktop release verification & hardening | **PLANNED** | Full standalone Windows Tauri binary packaging, launch, and verification against live backend |
+| **Nov 18–21** | Final polish, demo rehearsal, documentation, and MVP freeze | **TARGET WINDOW** | Fresh environment repeatable demo; MVP target window preserved |
 
-This is a **recommended recovery plan**, not the exact historical schedule. Dates may be adjusted after an actual repository audit, but the MVP target should not quietly slip just to accommodate optional tools.
+The controlling delivery deadline remains **November 15–21, 2026**.
 
 ### Minimum acceptance criteria for the November MVP
 
-- [ ] Fresh checkout/setup instructions are accurate.
-- [ ] Docker Compose starts the required local services and PostgreSQL.
-- [ ] The demo client can exercise API → Orders → Payment.
-- [ ] Each run has a unique `run_id` and useful trace correlation where applicable.
-- [ ] Event capture emits the agreed schema and event types.
-- [ ] Events and run metadata persist in PostgreSQL.
-- [ ] Events can be retrieved in stable chronological order.
-- [ ] `GET /runs/{id}/topology` returns the service topology for that run or clearly documented configured topology.
-- [ ] The UI renders the topology if time permits; API topology is tested either way.
-- [ ] A deliberately killed local service creates a `FAILURE_INJECTED` record and observable downstream events.
-- [ ] A timeline shows what happened; static timeline is acceptable if playback is unstable.
-- [ ] pytest covers each completed slice and the critical API/event behaviors.
-- [ ] No production credentials/secrets are committed.
-- [ ] README includes architecture, setup, demo script, limitations, and screenshots/recorded evidence.
+- [x] Fresh checkout/setup instructions are accurate.
+- [x] Docker Compose starts the required local services and PostgreSQL.
+- [x] The demo client can exercise Orders → Payment.
+- [x] Each run has a unique `run_id` and trace correlation.
+- [x] Event capture emits the agreed schema and event types.
+- [x] Events and run metadata persist in PostgreSQL.
+- [x] Events can be retrieved in stable chronological order.
+- [x] `GET /runs/{id}/topology` returns real service topology.
+- [x] React UI renders the topology via React Flow using real backend data.
+- [x] A deliberately killed local service creates a `FAILURE_INJECTED` record and observable downstream events (backend verified).
+- [ ] M3 UI controls for triggering failure injection and interactive playback.
+- [x] pytest covers each completed slice and critical API/event behaviors (61 tests passing).
+- [x] No production credentials/secrets are committed.
+- [ ] README includes final architecture, setup, demo script, limitations, and screenshots.
 
 ### Historical milestones from the earlier plan
 
@@ -691,33 +724,26 @@ No new feature enters active work merely because it is technically interesting. 
 - Go, NATS, Redis, Jaeger, and Toxiproxy belong to a deferred Mid variant after the relevant gate/GATE period.
 - Current MVP target is November 15–21, 2026; this supersedes the earlier November 23–29 hard-freeze plan as the delivery target.
 - The user should write code themselves; guidance should use tasks/hints/reviews rather than full solution dumps.
+- **November 7, 2026 — Milestone 2 (M2) APPROVED & FROZEN**: M1 instrument shell, M1.5 Tauri desktop configuration, and M2 live FastAPI/PostgreSQL integration are complete and verified. Real telemetry, run catalog, event stream inspection, and interactive React Flow topology are operational.
+- **November 7, 2026 — REST-Only Frontend Communication**: The React frontend interacts with the system exclusively through backend REST APIs (`frontend/src/services/chronosApi.ts`). No direct database connections or Docker socket access exist from the UI.
+- **November 7, 2026 — Hardened CORS & Origin Policy**: Backend CORS explicitly allows `http://localhost:1420`, `http://127.0.0.1:1420`, and `http://tauri.localhost` with `allow_credentials=False`. No wildcard origins allowed. Preflight and health checks verified.
+- **November 7, 2026 — Desktop Release Verification Boundary**: Distinction maintained between M2 code completion and standalone release readiness. Packaged Windows Tauri application binary compilation and launch are recorded as a pending desktop release verification task.
 
-### Questions to resolve during implementation
+### Questions resolved in M1/M1.5/M2
 
-1. What exactly is already present and committed in the current repo? Inspect before changes.
-2. Will CHRONOS event capture and topology API live in one FastAPI app for the MVP, or be split into a separate backend process?
-3. What are the exact PostgreSQL tables and minimal run-metadata fields?
-4. How is `run_id` created and propagated through each sample service?
-5. How is `trace_id` propagated if a request crosses services? Is there a simple header for the MVP?
-6. Is topology computed from recorded `SERVICE_CALL` events, configured service definitions, or a combination? This must be explicit.
-7. Which exact local Compose service is the first failure-injection target?
-8. What is the minimum UI screen structure? Prefer one topology view and one timeline, not a full dashboard.
-9. Are the raw experiments and first FastAPI routes saved and committed, or only drafted in conversation?
-10. What exact success/error response schema is used for the Orders and Payment services?
-
-Resolve these questions only when the next slice needs them. Don't block the entire build on speculative architecture perfection.
+1. *Repo structure*: Consolidated into top-level `backend/` and `frontend/` directories.
+2. *CHRONOS backend architecture*: FastAPI service provides both sample order endpoints and CHRONOS observability endpoints (`/runs`, `/runs/{id}`, `/runs/{id}/events`, `/runs/{id}/topology`, `/health`).
+3. *Database*: PostgreSQL schema persists `runs` and `events` tables with UUID keys and JSONB payloads.
+4. *Frontend*: React 18 + Tailwind CSS + React Flow (`@xyflow/react`) wrapped in Tauri 2 desktop shell, with 1980 Bertone Lamborghini Athon / Volvo Tundra digital instrument cluster visual identity.
 
 ---
 
-## 19. Suggested next actions (as of October 18, 2026)
+## 19. Suggested next actions (as of November 7, 2026)
 
-1. In WSL, inspect the repository before editing anything: `git status`, `git log --oneline -5`, and list the files in `slice-0/01-http-basics`.
-2. Verify which virtual environment is active. The observed FastAPI/Uvicorn package location was `slice-0/01-http-basics/.venv/lib/python3.14/site-packages`; do not assume the virtual environment is at the project root.
-3. Save and run the user's FastAPI app; test `GET /` and `GET /orders` in `/docs` or with the existing client.
-4. Add a route with a path parameter only after explaining the idea and letting the user attempt it.
-5. Build the service chain in the smallest increments possible, keeping the user responsible for writing code and explaining their decisions.
-6. Re-baseline the implementation status after inspecting the actual repository, then keep the November 15–21 delivery target visible.
-7. Commit this file to the repository as `CHRONOS_CONTEXT.md` and update it whenever a real architectural or deadline decision changes.
+1. **Milestone 3 (M3) Planning**: Design the Failure Experiment Orchestration and Interactive Timeline Playback milestone.
+2. **Failure Injection UI Integration**: Connect the approved backend failure injection endpoint (`POST /runs/{run_id}/failure`) to the frontend failure injection panel.
+3. **Timeline Playback**: Build interactive playback controls (play, pause, step, speed) scrubbing across the real event stream.
+4. **Preserve Scope**: Maintain the November 15–21, 2026 MVP delivery window and architectural boundaries.
 
 ---
 

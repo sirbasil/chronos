@@ -4,6 +4,7 @@ import os
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import requests
 
@@ -12,6 +13,7 @@ from database import (
     get_events_by_run,
     get_run,
     init_db,
+    list_runs,
     save_event,
     update_run_status,
 )
@@ -27,6 +29,20 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+ALLOWED_ORIGINS = [
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "http://tauri.localhost",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 # Inside Docker Compose this is overridden to http://payment:8001 via the
 # PAYMENT_SERVICE_URL environment variable. The default keeps local dev and
@@ -49,6 +65,29 @@ orders_db = {
 @app.get("/")
 def home():
     return {"message": "Hello from CHRONOS"}
+
+
+class HealthResponse(BaseModel):
+    status: str
+    timestamp: datetime
+    database: str
+
+
+@app.get("/health", response_model=HealthResponse)
+def health_check():
+    """Health check endpoint confirming API and DB connectivity."""
+    db_status = "connected"
+    try:
+        # Lightweight probe of DB connection
+        get_run(UUID("00000000-0000-0000-0000-000000000000"))
+    except Exception:
+        db_status = "disconnected"
+
+    return HealthResponse(
+        status="ok" if db_status == "connected" else "degraded",
+        timestamp=datetime.now(timezone.utc),
+        database=db_status,
+    )
 
 
 @app.get("/orders")
@@ -75,6 +114,42 @@ class RunResponse(BaseModel):
     run_id: UUID
     started_at: datetime
     status: str
+
+
+class RunSummaryResponse(BaseModel):
+    run_id: UUID
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: str
+
+
+@app.get("/runs", response_model=list[RunSummaryResponse])
+def get_runs(limit: int = 50):
+    """List recent runs in reverse chronological order."""
+    runs = list_runs(limit=limit)
+    return [
+        RunSummaryResponse(
+            run_id=r["run_id"],
+            started_at=r["started_at"],
+            completed_at=r.get("completed_at"),
+            status=r["status"],
+        )
+        for r in runs
+    ]
+
+
+@app.get("/runs/{run_id}", response_model=RunSummaryResponse)
+def get_run_by_id(run_id: UUID):
+    """Get single run record by ID."""
+    run = get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return RunSummaryResponse(
+        run_id=run["run_id"],
+        started_at=run["started_at"],
+        completed_at=run.get("completed_at"),
+        status=run["status"],
+    )
 
 
 @app.post("/runs", response_model=RunResponse, status_code=201)

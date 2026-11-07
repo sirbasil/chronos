@@ -1,0 +1,68 @@
+:root {
+  /* Automotive Digital Instrument Tokens (Lamborghini Athon / Volvo Tundra Concept) */
+  --chrono-bg: #040604;
+  --chrono-panel: #0b1009;
+  --chrono-panel-raised: #12190e;
+  --chrono-panel-highlight: #1b2614;
+  --chrono-screen-bg: #020402;
+  --chrono-bezel-border: #1a2414;
+  --chrono-bezel-highlight: rgba(255, 255, 255, 0.08);
+  --chrono-bezel-shadow: rgba(0, 0, 0, 0.85);
+
+  /* Graticule & Grids */
+  --chrono-grid: #283618;
+  --chrono-grid-subtle: #141c0c;
+  --chrono-grid-bright: #455e24;
+  --chrono-graticule-axis: rgba(184, 255, 0, 0.35);
+
+  /* High-Intensity Chartreuse / Yellow-Green Active Phosphor */
+  --chrono-phosphor: #b8ff00;
+  --chrono-phosphor-bright: #ccff33;
+  --chrono-phosphor-dim: #4d6e0a;
+  --chrono-phosphor-ghost: rgba(184, 255, 0, 0.08);
+  --glow-phosphor: 0 0 8px rgba(184, 255, 0, 0.65), 0 0 20px rgba(184, 255, 0, 0.25);
+  --glow-phosphor-sm: 0 0 5px rgba(184, 255, 0, 0.5);
+
+  /* Warm Automotive Incandescent / LED Amber & Orange */
+  --chrono-amber: #ff9e00;
+  --chrono-amber-bright: #ffb833;
+  --chrono-amber-deep: #ff6a00;
+  --chrono-amber-dim: #543400;
+  --chrono-amber-ghost: rgba(255, 158, 0, 0.08);
+  --glow-amber: 0 0 8px rgba(255, 158, 0, 0.7), 0 0 20px rgba(255, 110, 0, 0.3);
+  --glow-amber-sm: 0 0 5px rgba(255, 158, 0, 0.55);
+
+  /* Automotive Hazard / Warning Orange-Red */
+  --chrono-danger: #ff2e17;
+  --chrono-danger-bright: #ff5744;
+  --chrono-danger-dim: #541108;
+  --chrono-danger-ghost: rgba(255, 46, 23, 0.08);
+  --glow-danger: 0 0 8px rgba(255, 46, 23, 0.7), 0 0 20px rgba(255, 46, 23, 0.3);
+
+  /* High-Contrast Readouts & Typography */
+  --chrono-text: #e6f0d5;
+  --chrono-text-bright: #ffffff;
+  --chrono-muted: #748c5c;
+  --chrono-success: #00ff88;
+  --glow-success: 0 0 8px rgba(0, 255, 136, 0.65);
+
+  /* Typography */
+  --font-ui: 'Chakra Petch', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+  --font-digital: 'Share Tech Mono', 'JetBrains Mono', monospace;
+
+  /* Layout Constants */
+  --header-height: 52px;
+  --nav-width: 190px;
+  --status-strip-height: 32px;
+  --inspector-width: 380px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
