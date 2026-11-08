@@ -2,7 +2,6 @@
 
 This document defines the Amazon Cognito authentication architecture, role-based authorization matrix, backend JWT verification design, Docker failure injection security audit, and AWS deployment readiness checklist for CHRONOS.
 
----
 
 ## 1. Cognito Resource Inventory (Verified Live)
 
@@ -27,7 +26,6 @@ The following AWS Cognito resources were inspected in `ap-south-1` (Mumbai) usin
 | **Full Domain URL** | `https://chronos-auth-519725697841.auth.ap-south-1.amazoncognito.com` |
 | **Managed Login Status** | Active (Managed Login Version 2) |
 
----
 
 ## 2. Environment Variables Configuration
 
