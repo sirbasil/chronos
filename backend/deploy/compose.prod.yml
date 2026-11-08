@@ -1,0 +1,98 @@
+name: 01-http-basics
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-chronos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-chronos}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chronos} -d ${POSTGRES_DB:-chronos}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  payment:
+    image: chronos-payment:mvp-2026-11-08
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')\"" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  orders:
+    image: chronos-orders:mvp-2026-11-08
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      PAYMENT_SERVICE_URL: http://payment:8001
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-chronos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-chronos}
+      ENABLE_FAILURE_INJECTION: ${ENABLE_FAILURE_INJECTION:-false}
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-01-http-basics}
+      FAILURE_CONTROLLER_URL: ${FAILURE_CONTROLLER_URL:-http://failure-controller:8002}
+      FAILURE_CONTROLLER_TOKEN: ${FAILURE_CONTROLLER_TOKEN:-}
+      APP_ENV: ${APP_ENV:-production}
+      COGNITO_REGION: ${COGNITO_REGION:-ap-south-1}
+      COGNITO_USER_POOL_ID: ${COGNITO_USER_POOL_ID:-ap-south-1_tDVeeHq0g}
+      COGNITO_USER_POOL_CLIENT_ID: ${COGNITO_USER_POOL_CLIENT_ID:-4268fo6vpodgv8dt37tim2aec3}
+      COGNITO_ADMIN_GROUP: ${COGNITO_ADMIN_GROUP:-chronos-admins}
+      COGNITO_OPERATOR_GROUP: ${COGNITO_OPERATOR_GROUP:-chronos-operators}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?Set CORS_ALLOWED_ORIGINS in .env}
+    networks:
+      - default
+      - failure-control
+    depends_on:
+      payment:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/')\"" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  failure-controller:
+    image: chronos-failure-controller:mvp-2026-11-08
+    restart: unless-stopped
+    environment:
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-01-http-basics}
+      FAILURE_CONTROLLER_TOKEN: ${FAILURE_CONTROLLER_TOKEN:?FAILURE_CONTROLLER_TOKEN must be configured}
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - failure-control
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be configured}"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=32m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  default:
+    name: 01-http-basics_default
+  failure-control:
+    name: 01-http-basics-failure-control
+    internal: true
+
+volumes:
+  postgres_data:
