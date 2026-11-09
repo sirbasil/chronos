@@ -1,16 +1,32 @@
 import React, { useState } from 'react';
 import { ChronosRun } from '../../types/events';
 import { AppMode } from '../../types/api';
-import { Layers, Activity, RefreshCw, Check, Copy, ArrowRight, Filter } from 'lucide-react';
+import {
+  Layers,
+  Activity,
+  RefreshCw,
+  Check,
+  Copy,
+  ArrowRight,
+  Filter,
+  Play,
+  Loader2,
+  AlertTriangle,
+  X,
+} from 'lucide-react';
 
 interface RunsViewProps {
   runs: ChronosRun[];
   currentRun: ChronosRun;
   mode: AppMode;
   isLoading: boolean;
+  isCreatingRun?: boolean;
+  creationError?: string | null;
   onRefresh: () => void;
   onSelectRun: (run: ChronosRun) => void;
   onSwitchToMonitor: () => void;
+  onCreateRun?: () => void;
+  onDismissError?: () => void;
 }
 
 export const RunsView: React.FC<RunsViewProps> = ({
@@ -18,9 +34,13 @@ export const RunsView: React.FC<RunsViewProps> = ({
   currentRun,
   mode,
   isLoading,
+  isCreatingRun = false,
+  creationError = null,
   onRefresh,
   onSelectRun,
   onSwitchToMonitor,
+  onCreateRun,
+  onDismissError,
 }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED' | 'IN_PROGRESS'>('ALL');
@@ -114,10 +134,38 @@ export const RunsView: React.FC<RunsViewProps> = ({
             ))}
           </div>
 
+          {/* START NEW RUN Button */}
+          {onCreateRun && (
+            <button
+              onClick={onCreateRun}
+              disabled={isLoading || isCreatingRun || mode === 'PREVIEW'}
+              className={`flex items-center gap-1.5 px-3 py-1 bg-[#12220f] border border-[#22c55e] text-[#4ade80] font-mono text-[10px] font-bold tracking-wider hover:bg-[#1b3516] hover:shadow-[0_0_8px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+                isCreatingRun ? 'animate-pulse' : ''
+              }`}
+              title={
+                mode === 'PREVIEW'
+                  ? 'Run creation is only available in LIVE mode'
+                  : 'Initialize and start a new run on backend (POST /runs)'
+              }
+            >
+              {isCreatingRun ? (
+                <>
+                  <Loader2 className="w-3 h-3 animate-spin text-chrono-phosphor" />
+                  <span>STARTING...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3 h-3 fill-current text-[#4ade80]" />
+                  <span>START NEW RUN</span>
+                </>
+              )}
+            </button>
+          )}
+
           <button
             onClick={onRefresh}
-            disabled={isLoading}
-            className={`p-1.5 bg-[#0c1209] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-colors ${
+            disabled={isLoading || isCreatingRun}
+            className={`p-1.5 bg-[#0c1209] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               isLoading ? 'animate-spin text-chrono-phosphor' : ''
             }`}
             title="Refresh Runs from PostgreSQL"
@@ -126,6 +174,25 @@ export const RunsView: React.FC<RunsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Error Alert Banner */}
+      {creationError && (
+        <div className="bg-[#1c0808] border-b border-chrono-red px-4 py-2 flex items-center justify-between text-xs font-mono text-chrono-red z-10 shrink-0">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 text-chrono-red drop-shadow-[0_0_6px_#ff3333]" />
+            <span>RUN CREATION FAILED: {creationError}</span>
+          </div>
+          {onDismissError && (
+            <button
+              onClick={onDismissError}
+              className="p-1 text-chrono-muted hover:text-white transition-colors cursor-pointer"
+              title="Dismiss error"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      )}
 
       {/* 2. Run Catalog Table */}
       <div className="flex-1 overflow-y-auto p-4 bg-[#040604]">
@@ -228,9 +295,28 @@ export const RunsView: React.FC<RunsViewProps> = ({
             </div>
             <p className="font-mono text-xs text-chrono-muted max-w-sm mb-4">
               {mode === 'LIVE'
-                ? 'No run records were returned by PostgreSQL. Trigger an order checkout to populate the history.'
+                ? 'No run records were returned by PostgreSQL. Start a new run or trigger an order checkout to populate the history.'
                 : 'No preview fixtures match the selected filter.'}
             </p>
+            {mode === 'LIVE' && onCreateRun && (
+              <button
+                onClick={onCreateRun}
+                disabled={isLoading || isCreatingRun}
+                className="flex items-center gap-2 px-4 py-2 bg-[#12220f] border border-[#22c55e] text-[#4ade80] font-mono text-xs font-bold tracking-wider hover:bg-[#1b3516] hover:shadow-[0_0_8px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {isCreatingRun ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-chrono-phosphor" />
+                    <span>STARTING RUN...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 fill-current text-[#4ade80]" />
+                    <span>START NEW RUN</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         )}
       </div>

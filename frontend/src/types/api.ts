@@ -13,9 +13,11 @@ export interface BackendHealth {
 export interface RunSummaryResponse {
   run_id: string;
   started_at: string;
-  completed_at: string | null;
+  completed_at?: string | null;
   status: RunStatus;
 }
+
+export type CreateRunResponse = RunSummaryResponse;
 
 export interface TopologyNode {
   id: string;

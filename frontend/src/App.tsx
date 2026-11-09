@@ -7,6 +7,7 @@ import {
   checkHealth,
   getRuns,
   getRun,
+  createRun,
   getRunEvents,
   getRunTopology,
   buildChronosRun,
@@ -42,6 +43,8 @@ const CockpitApp: React.FC = () => {
   const [backendHealth, setBackendHealth] = useState<BackendHealth | null>(null);
   const [lastContactTime, setLastContactTime] = useState<Date | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [isCreatingRun, setIsCreatingRun] = useState<boolean>(false);
+  const [runCreationError, setRunCreationError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   // Runs & Active Data
@@ -170,7 +173,7 @@ const CockpitApp: React.FC = () => {
       const convertedRuns: ChronosRun[] = summaries.map((s) => ({
         run_id: s.run_id,
         started_at: s.started_at,
-        completed_at: s.completed_at,
+        completed_at: s.completed_at ?? null,
         status: s.status,
         description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
         is_failure_experiment: false,
@@ -246,6 +249,7 @@ const CockpitApp: React.FC = () => {
   // Switch between LIVE and PREVIEW modes
   const handleToggleMode = (newMode: AppMode) => {
     if (newMode === mode) return;
+    setRunCreationError(null);
     setMode(newMode);
 
     if (newMode === 'PREVIEW') {
@@ -275,6 +279,61 @@ const CockpitApp: React.FC = () => {
       setSelectedServiceId(initialEvent ? initialEvent.service_id : 'orders');
       setCurrentTimeMs(initialEvent ? (initialEvent.offset_ms ?? 0) : 0);
       setInspectorTarget(initialEvent ? { type: 'EVENT', event: initialEvent } : null);
+    }
+  };
+
+  // Create a new run via POST /runs and immediately load it
+  const handleCreateRun = async () => {
+    if (isCreatingRun || mode !== 'LIVE') return;
+    setIsCreatingRun(true);
+    setRunCreationError(null);
+
+    try {
+      const newRunSummary = await createRun();
+      const newRunId = newRunSummary.run_id;
+
+      // Refresh runs list from backend
+      const summaries = await getRuns(50);
+      let convertedRuns: ChronosRun[] = summaries.map((s) => ({
+        run_id: s.run_id,
+        started_at: s.started_at,
+        completed_at: s.completed_at ?? null,
+        status: s.status,
+        description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
+        is_failure_experiment: false,
+        events: [],
+      }));
+
+      // Guarantee the newly created run is present at the top
+      if (!convertedRuns.some((r) => r.run_id === newRunId)) {
+        convertedRuns = [
+          {
+            run_id: newRunSummary.run_id,
+            started_at: newRunSummary.started_at,
+            completed_at: newRunSummary.completed_at ?? null,
+            status: newRunSummary.status,
+            description: `Run ${newRunSummary.run_id.slice(0, 8)} (${newRunSummary.status})`,
+            is_failure_experiment: false,
+            events: [],
+          },
+          ...convertedRuns,
+        ];
+      }
+      setLiveRuns(convertedRuns);
+
+      // Load full events and topology for the new run
+      await loadLiveRunDetails(newRunId, convertedRuns);
+
+      // Return the user to Monitor view so the new run is immediately accessible
+      setCurrentDestination('MONITOR');
+    } catch (err: unknown) {
+      console.error('Failed to create run:', err);
+      const message =
+        (err as { message?: string })?.message ||
+        (err instanceof Error ? err.message : 'Failed to initialize run on backend');
+      setRunCreationError(message);
+    } finally {
+      setIsCreatingRun(false);
     }
   };
 
@@ -431,7 +490,7 @@ const CockpitApp: React.FC = () => {
         connectionState={connectionState}
         backendHealth={backendHealth}
         lastContactTime={lastContactTime}
-        isLoading={isLoading}
+        isLoading={isLoading || isCreatingRun}
         onRefresh={loadLiveData}
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen(!inspectorOpen)}
@@ -521,9 +580,13 @@ const CockpitApp: React.FC = () => {
               currentRun={currentRun}
               mode={mode}
               isLoading={isLoading}
+              isCreatingRun={isCreatingRun}
+              creationError={runCreationError}
               onRefresh={loadLiveData}
               onSelectRun={handleSelectRun}
               onSwitchToMonitor={() => setCurrentDestination('MONITOR')}
+              onCreateRun={handleCreateRun}
+              onDismissError={() => setRunCreationError(null)}
             />
           ) : (
             <UnimplementedView

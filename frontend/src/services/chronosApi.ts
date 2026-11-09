@@ -134,6 +134,16 @@ export const getRun = async (
   return handleResponse<RunSummaryResponse>(res);
 };
 
+export const createRun = async (
+  signal?: AbortSignal
+): Promise<RunSummaryResponse> => {
+  const res = await fetchWithTimeout('/runs', {
+    method: 'POST',
+    signal,
+  });
+  return handleResponse<RunSummaryResponse>(res);
+};
+
 export const getRunEvents = async (
   runId: string,
   signal?: AbortSignal
@@ -202,7 +212,7 @@ export const buildChronosRun = (
   return {
     run_id: summary.run_id,
     started_at: summary.started_at,
-    completed_at: summary.completed_at,
+    completed_at: summary.completed_at ?? null,
     status: summary.status,
     order_id: orderId,
     description: desc,
