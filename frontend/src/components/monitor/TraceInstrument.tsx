@@ -32,22 +32,57 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [containerWidth, setContainerWidth] = useState<number>(760);
+
+  // Track container width dynamically to keep 1.0X zoom panoramic across all screens
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const updateWidth = () => {
+      if (el.clientWidth > 100) {
+        setContainerWidth(el.clientWidth);
+      }
+    };
+    updateWidth();
+    const ro = new ResizeObserver(updateWidth);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   // Maximum time duration in milliseconds with margin
-  const offsets = run.events.map((e) => (e.offset_ms ?? 0) + 20);
-  const maxOffset = Math.max(140, ...(offsets.length > 0 ? offsets : [140]));
-  const baseWidthPx = 720;
-  const pxPerMs = maxOffset > 600 ? Math.max(0.6, 900 / maxOffset) : 6.0;
-  const trackWidthPx = Math.max(baseWidthPx, maxOffset * pxPerMs * zoomLevel);
+  const lastOffset = run.events.length > 0
+    ? Math.max(...run.events.map((e) => e.offset_ms ?? 0))
+    : 0;
+  const marginMs = Math.max(20, Math.round(lastOffset * 0.05));
+  const maxOffset = Math.max(140, lastOffset + marginMs);
+  const baseWidthPx = Math.max(720, containerWidth);
+  const trackWidthPx = Math.max(baseWidthPx, Math.round(baseWidthPx * zoomLevel));
 
   const timeToPx = (ms: number) => {
+    if (maxOffset <= 0) return 30;
     return (ms / maxOffset) * (trackWidthPx - 60) + 30;
   };
 
   const pxToTime = (px: number) => {
+    if (trackWidthPx <= 60 || maxOffset <= 0) return 0;
     const raw = ((px - 30) / (trackWidthPx - 60)) * maxOffset;
     return Math.max(0, Math.min(maxOffset, raw));
   };
+
+  // Auto-scroll to selected event if zoomed in and out of viewport
+  useEffect(() => {
+    if (selectedEvent && scrollContainerRef.current) {
+      const x = timeToPx(selectedEvent.offset_ms ?? 0);
+      const container = scrollContainerRef.current;
+      const visibleWidth = container.clientWidth;
+      if (x < container.scrollLeft + 40 || x > container.scrollLeft + visibleWidth - 40) {
+        container.scrollTo({
+          left: Math.max(0, x - visibleWidth / 2),
+          behavior: 'smooth',
+        });
+      }
+    }
+  }, [selectedEvent?.event_id, zoomLevel]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Only respond to primary button (left click)
@@ -95,7 +130,9 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
 
   // Time grid tick intervals adapted to run duration
   let baseTickStep = 25;
-  if (maxOffset > 2000) baseTickStep = 500;
+  if (maxOffset > 10000) baseTickStep = 2000;
+  else if (maxOffset > 5000) baseTickStep = 1000;
+  else if (maxOffset > 2000) baseTickStep = 500;
   else if (maxOffset > 800) baseTickStep = 200;
   else if (maxOffset > 400) baseTickStep = 100;
   else if (maxOffset > 200) baseTickStep = 50;
@@ -163,6 +200,15 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
           dotColor: event.severity === 'ERROR' ? 'bg-chrono-danger shadow-[0_0_6px_#ff2e17]' : 'bg-chrono-success shadow-[0_0_6px_#00ff88]',
           glow: event.severity === 'ERROR' ? 'shadow-[0_0_10px_rgba(255,46,23,0.7)]' : 'shadow-[0_0_8px_rgba(0,255,136,0.6)]',
         };
+      default:
+        return {
+          label: (event.event_type as string) || 'EVT',
+          badgeBg: 'bg-[#0f140d]',
+          textColor: 'text-chrono-phosphor',
+          borderColor: 'border-chrono-phosphor',
+          dotColor: 'bg-chrono-phosphor shadow-[0_0_6px_#b8ff00]',
+          glow: 'shadow-[0_0_8px_rgba(184,255,0,0.6)]',
+        };
     }
   };
 
@@ -172,15 +218,29 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
       case 'REQUEST_START':
         return `Order ${p.order_id ?? ''} (${p.total_amount ? `$${p.total_amount} ${p.currency ?? ''}` : `${p.items_count ?? 1} items`})`;
       case 'SERVICE_CALL':
-        return `${p.method ?? 'CALL'} ${p.endpoint ?? ''} -> ${p.destination_service ?? 'payment'}`;
-      case 'RESPONSE':
-        return `HTTP ${p.http_status ?? 200} [${p.status ?? 'AUTHORIZED'}]`;
-      case 'FAILURE_INJECTED':
-        return `${p.action ?? 'KILL'} (${p.signal ?? 'SIGKILL'}) -> ${p.target_service ?? 'payment'}`;
-      case 'SERVICE_ERROR':
-        return `${p.error_type ?? 'Error'}: ${p.detail ?? 'Connection failure'}`;
-      case 'REQUEST_END':
-        return `${p.checkout_status ?? 'DONE'} [HTTP ${p.http_status ?? 200}] (${p.duration_ms ?? event.offset_ms ?? 0}ms)`;
+        return `${p.method ?? 'POST'} ${p.endpoint ?? '/payments'} -> ${p.destination_service ?? 'payment'}`;
+      case 'RESPONSE': {
+        const httpStatus = p.http_status ?? p.status_code ?? 200;
+        const statusText = p.status ?? 'AUTHORIZED';
+        return `HTTP ${httpStatus} [${statusText}]`;
+      }
+      case 'FAILURE_INJECTED': {
+        const action = p.action ?? 'KILL';
+        const target = p.target ?? p.target_service ?? 'payment';
+        const signal = p.signal ? ` (${p.signal})` : '';
+        return `${action}${signal} -> ${target}`;
+      }
+      case 'SERVICE_ERROR': {
+        const errorType = p.error_type ?? 'Error';
+        const detail = p.detail ?? (p.destination_service ? `${p.destination_service} unavailable` : 'Connection failure');
+        return `${errorType}: ${detail}`;
+      }
+      case 'REQUEST_END': {
+        const status = (p.status || p.checkout_status || 'DONE') as string;
+        const httpStatus = p.http_status || (status === 'COMPLETED' ? 200 : 503);
+        const duration = p.duration_ms ?? event.offset_ms ?? 0;
+        return `${status} [HTTP ${httpStatus}] (${duration}ms)`;
+      }
       default:
         return JSON.stringify(p);
     }
@@ -266,7 +326,10 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
           </div>
 
           <button
-            onClick={() => onTimeChange(0)}
+            onClick={() => {
+              onTimeChange(0);
+              scrollContainerRef.current?.scrollTo({ left: 0, behavior: 'smooth' });
+            }}
             className="flex items-center gap-1.5 px-2.5 py-1 bg-[#040604] border border-chrono-grid hover:border-chrono-amber text-chrono-muted hover:text-chrono-amber transition-colors shadow-sm"
             title="Reset Cursor to T=0"
           >

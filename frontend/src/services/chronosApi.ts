@@ -4,6 +4,8 @@ import {
   BackendHealth,
   RunSummaryResponse,
   TopologyResponse,
+  CheckoutResponse,
+  FailureInjectionResponse,
   ApiError,
 } from '../types/api';
 import { ChronosEvent, ChronosRun, ServiceSummary } from '../types/events';
@@ -144,6 +146,39 @@ export const createRun = async (
   return handleResponse<RunSummaryResponse>(res);
 };
 
+export const checkoutOrder = async (
+  orderId = 101,
+  runId?: string,
+  signal?: AbortSignal
+): Promise<CheckoutResponse> => {
+  const headers: Record<string, string> = {};
+  if (runId) {
+    headers['X-Run-ID'] = runId;
+  }
+  const res = await fetchWithTimeout(`/orders/${orderId}/checkout`, {
+    method: 'POST',
+    headers,
+    signal,
+  });
+  return handleResponse<CheckoutResponse>(res);
+};
+
+export const injectFailure = async (
+  runId: string,
+  target = 'payment',
+  signal?: AbortSignal
+): Promise<FailureInjectionResponse> => {
+  const res = await fetchWithTimeout(`/runs/${runId}/failure`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ target }),
+    signal,
+  });
+  return handleResponse<FailureInjectionResponse>(res);
+};
+
 export const getRunEvents = async (
   runId: string,
   signal?: AbortSignal
@@ -160,9 +195,40 @@ export const getRunTopology = async (
   return handleResponse<TopologyResponse>(res);
 };
 
+export const getEventChannel = (event: ChronosEvent): string => {
+  // If the event already has a specific service_id other than 'orders', preserve it
+  if (event.service_id && event.service_id !== 'orders') {
+    return event.service_id;
+  }
+
+  // Derive target channel from event type and payload
+  switch (event.event_type) {
+    case 'FAILURE_INJECTED':
+      return (
+        (event.payload?.target as string) ||
+        (event.payload?.target_service as string) ||
+        'payment'
+      );
+    case 'RESPONSE':
+      return (
+        (event.payload?.responding_service as string) ||
+        (event.payload?.destination_service as string) ||
+        'payment'
+      );
+    case 'SERVICE_ERROR':
+      return (
+        (event.payload?.destination_service as string) ||
+        (event.payload?.target as string) ||
+        'payment'
+      );
+    default:
+      return event.service_id || 'orders';
+  }
+};
+
 export const transformEvents = (
   rawEvents: ChronosEvent[],
-  runStartedAt?: string
+  _runStartedAt?: string
 ): ChronosEvent[] => {
   if (!rawEvents || rawEvents.length === 0) return [];
 
@@ -171,15 +237,16 @@ export const transformEvents = (
     (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
   );
 
-  const baseTime = runStartedAt
-    ? new Date(runStartedAt).getTime()
-    : new Date(sorted[0].timestamp).getTime();
+  // Use the earliest event timestamp as T=0 to measure the execution lifecycle accurately
+  const baseTime = new Date(sorted[0].timestamp).getTime();
 
   return sorted.map((evt) => {
     const evtTime = new Date(evt.timestamp).getTime();
     const offset_ms = Math.max(0, evtTime - baseTime);
+    const service_id = getEventChannel(evt);
     return {
       ...evt,
+      service_id,
       offset_ms,
     };
   });
@@ -196,15 +263,16 @@ export const buildChronosRun = (
     : undefined;
   const isFailure = events.some((e) => e.event_type === 'FAILURE_INJECTED');
 
-  const durationMs = summary.completed_at
-    ? new Date(summary.completed_at).getTime() - new Date(summary.started_at).getTime()
-    : events.length > 1
-    ? (events[events.length - 1].offset_ms ?? 0)
-    : 0;
+  const durationMs =
+    events.length > 1
+      ? (events[events.length - 1].offset_ms ?? 0)
+      : summary.completed_at
+      ? Math.max(0, new Date(summary.completed_at).getTime() - new Date(summary.started_at).getTime())
+      : 0;
 
   let desc = `Run ${summary.run_id.slice(0, 8)} (${summary.status})`;
   if (isFailure) {
-    desc = `Run ${summary.run_id.slice(0, 8)} [FAULT INJECTED]`;
+    desc = `Run ${summary.run_id.slice(0, 8)} [FAULT INJECTED] - ${durationMs}ms`;
   } else if (orderId) {
     desc = `Order #${orderId} checkout (${summary.status}) - ${durationMs}ms`;
   }

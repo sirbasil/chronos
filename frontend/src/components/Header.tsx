@@ -2,7 +2,7 @@ import React from 'react';
 import { ChronosRun } from '../types/events';
 import { InspectorTarget } from '../types/ui';
 import { AppMode, BackendConnectionState, BackendHealth } from '../types/api';
-import { Server, Box, SidebarClose, SidebarOpen, RefreshCw, Radio } from 'lucide-react';
+import { Server, Box, SidebarClose, SidebarOpen, RefreshCw, Radio, Play, Loader2 } from 'lucide-react';
 
 interface HeaderProps {
   currentRun: ChronosRun;
@@ -20,6 +20,8 @@ interface HeaderProps {
   onSelectInspectorTarget: (target: InspectorTarget) => void;
   user?: { username: string; email?: string } | null;
   onSignOut?: () => void;
+  onCreateRun?: () => void;
+  isCreatingRun?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -38,6 +40,8 @@ export const Header: React.FC<HeaderProps> = ({
   onSelectInspectorTarget,
   user,
   onSignOut,
+  onCreateRun,
+  isCreatingRun = false,
 }) => {
   const getBackendStatusBadge = () => {
     if (mode === 'PREVIEW') {
@@ -156,6 +160,22 @@ export const Header: React.FC<HeaderProps> = ({
         >
           DETAILS
         </button>
+
+        {onCreateRun && mode === 'LIVE' && (
+          <button
+            onClick={onCreateRun}
+            disabled={isLoading || isCreatingRun}
+            className="flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 bg-[#12220f] border border-[#22c55e] text-[#4ade80] hover:bg-[#1a3816] hover:shadow-[0_0_6px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+            title="Create a new run on backend (POST /runs)"
+          >
+            {isCreatingRun ? (
+              <Loader2 className="w-2.5 h-2.5 animate-spin text-[#4ade80]" />
+            ) : (
+              <Play className="w-2.5 h-2.5 fill-current text-[#4ade80]" />
+            )}
+            <span>+ NEW RUN</span>
+          </button>
+        )}
       </div>
 
       {/* Right: Operational Status Indicators & Inspector Toggle Switch */}

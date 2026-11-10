@@ -55,6 +55,8 @@ export const StatusStrip: React.FC<StatusStripProps> = ({
                 ? 'text-chrono-success border-chrono-success bg-[#021f10] shadow-[0_0_6px_rgba(0,255,136,0.4)]'
                 : currentRun.status === 'FAILED'
                 ? 'text-chrono-danger border-chrono-danger bg-[#2b0805] shadow-[0_0_6px_rgba(255,46,23,0.4)]'
+                : currentRun.status === 'ABANDONED'
+                ? 'text-chrono-muted border-chrono-muted/60 bg-[#121412]'
                 : 'text-chrono-amber border-chrono-amber bg-[#201505] shadow-[0_0_6px_rgba(255,158,0,0.4)]'
             }`}
           >

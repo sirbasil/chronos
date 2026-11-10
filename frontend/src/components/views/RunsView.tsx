@@ -43,7 +43,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
   onDismissError,
 }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED' | 'IN_PROGRESS'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED' | 'IN_PROGRESS' | 'ABANDONED'>('ALL');
 
   const copyRunId = async (id: string) => {
     try {
@@ -84,6 +84,13 @@ export const RunsView: React.FC<RunsViewProps> = ({
             IN_PROGRESS
           </span>
         );
+      case 'ABANDONED':
+        return (
+          <span className="px-2 py-0.5 bg-[#121412] border border-chrono-muted/60 text-chrono-muted font-mono text-[10px] font-bold flex items-center gap-1.5 w-fit">
+            <span className="w-1.5 h-1.5 rounded-full bg-chrono-muted" />
+            ABANDONED
+          </span>
+        );
       default:
         return (
           <span className="px-2 py-0.5 bg-[#080d07] border border-chrono-grid text-chrono-muted font-mono text-[10px] font-bold">
@@ -119,7 +126,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
             <span className="px-2 text-chrono-muted flex items-center gap-1">
               <Filter className="w-3 h-3" /> FILTER:
             </span>
-            {(['ALL', 'COMPLETED', 'FAILED', 'IN_PROGRESS'] as const).map((s) => (
+            {(['ALL', 'COMPLETED', 'FAILED', 'IN_PROGRESS', 'ABANDONED'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilter(s)}

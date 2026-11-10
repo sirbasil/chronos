@@ -1,9 +1,11 @@
 import React from 'react';
 import { ChronosEvent, ChronosRun, ServiceSummary } from '../../types/events';
 import { AppMode } from '../../types/api';
+import { UserProfile } from '../../auth/AuthContext';
 import { MetricsCluster } from './MetricsCluster';
 import { TraceInstrument } from './TraceInstrument';
 import { ServiceMatrix } from './ServiceMatrix';
+import { ExperimentStagingPanel } from './ExperimentStagingPanel';
 
 interface MonitorViewProps {
   run: ChronosRun;
@@ -16,6 +18,20 @@ interface MonitorViewProps {
   onTimeChange: (timeMs: number) => void;
   onSelectMetric?: (metricKey: string) => void;
   mode?: AppMode;
+  isExecutingCheckout?: boolean;
+  isInjectingFailure?: boolean;
+  failureInjected?: boolean;
+  checkoutExecuted?: boolean;
+  lastExecutionResult?: {
+    status: number;
+    message: string;
+    details?: string;
+  } | null;
+  executionError?: string | null;
+  onExecuteCheckout?: () => void;
+  onInjectFailure?: () => void;
+  onDismissExecutionError?: () => void;
+  user?: UserProfile | null;
 }
 
 export const MonitorView: React.FC<MonitorViewProps> = ({
@@ -29,6 +45,16 @@ export const MonitorView: React.FC<MonitorViewProps> = ({
   onTimeChange,
   onSelectMetric,
   mode = 'LIVE',
+  isExecutingCheckout = false,
+  isInjectingFailure = false,
+  failureInjected = false,
+  checkoutExecuted = false,
+  lastExecutionResult = null,
+  executionError = null,
+  onExecuteCheckout,
+  onInjectFailure,
+  onDismissExecutionError,
+  user,
 }) => {
   return (
     <div className="flex-1 flex flex-col p-3.5 gap-3.5 overflow-hidden bg-chrono-bg">
@@ -44,7 +70,25 @@ export const MonitorView: React.FC<MonitorViewProps> = ({
         </div>
       </div>
 
-      {/* 2. Panoramic Instrument Field: Main Trace (68%) + Multi-Column Service Matrix (32%) */}
+      {/* 2. Active Experiment Staging Panel */}
+      {onExecuteCheckout && (
+        <ExperimentStagingPanel
+          run={run}
+          mode={mode}
+          isExecutingCheckout={isExecutingCheckout}
+          isInjectingFailure={isInjectingFailure}
+          failureInjected={failureInjected}
+          checkoutExecuted={checkoutExecuted}
+          lastExecutionResult={lastExecutionResult}
+          executionError={executionError}
+          onExecuteCheckout={onExecuteCheckout}
+          onInjectFailure={onInjectFailure ?? (() => {})}
+          onDismissError={onDismissExecutionError}
+          user={user}
+        />
+      )}
+
+      {/* 3. Panoramic Instrument Field: Main Trace (68%) + Multi-Column Service Matrix (32%) */}
       <div className="flex-1 flex gap-3.5 overflow-hidden min-h-0">
         {/* Left: Main Panoramic Trace Oscilloscope (~68%) */}
         <div className="flex-[68] min-w-0 h-full">

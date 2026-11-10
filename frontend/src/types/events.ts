@@ -21,7 +21,7 @@ export interface ChronosEvent {
   offset_ms?: number; // relative millisecond offset from run started_at
 }
 
-export type RunStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+export type RunStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'ABANDONED';
 
 export interface ChronosRun {
   run_id: string;

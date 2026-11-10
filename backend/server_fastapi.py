@@ -414,18 +414,35 @@ def checkout_order(
     finally:
         # 5. REQUEST_END event & run completion logic
         now = datetime.now(timezone.utc)
-        request_end = ChronosEvent(
-            run_id=run_id,
-            service_id="orders",
-            event_type="REQUEST_END",
-            source="orders-api",
-            payload={"order_id": order_id, "status": run_status},
-            severity="INFO" if run_status == "COMPLETED" else "ERROR",
-        )
-        save_event(request_end)
-        print(request_end.model_dump_json())
+        try:
+            request_end = ChronosEvent(
+                run_id=run_id,
+                service_id="orders",
+                event_type="REQUEST_END",
+                source="orders-api",
+                payload={"order_id": order_id, "status": run_status},
+                severity="INFO" if run_status == "COMPLETED" else "ERROR",
+            )
+            save_event(request_end)
+            print(request_end.model_dump_json())
+        except Exception as event_err:
+            logger.error(
+                "Failed to save REQUEST_END event for run %s: %s",
+                run_id,
+                event_err,
+                exc_info=True,
+            )
 
-        update_run_status(run_id=run_id, status=run_status, completed_at=now)
+        try:
+            update_run_status(run_id=run_id, status=run_status, completed_at=now)
+        except Exception as status_err:
+            logger.error(
+                "Failed to update final status '%s' for run %s: %s",
+                run_status,
+                run_id,
+                status_err,
+                exc_info=True,
+            )
 
 
 @app.get("/runs/{run_id}/events", response_model=list[ChronosEvent])

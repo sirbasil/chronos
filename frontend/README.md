@@ -1,34 +1,27 @@
-# CHRONOS Desktop Instrument Shell (M1)
+# CHRONOS Web Instrument Console
 
-**Product Direction:** Standalone desktop application
+**Product Direction:** Browser-based web application
 **Visual Reference:** 1980 Bertone digital instrumentation (Lamborghini Athon / Volvo Tundra)
-**Milestone:** M1 — Desktop Instrument Shell (Preview Mode)
+**Architecture:** React 18 + TypeScript + Vite + Tailwind CSS
 
 ---
 
 ## 1. Overview
 
-Milestone 1 establishes the desktop instrument shell, visual language, and interaction model for CHRONOS. The application is built using **React 18 + TypeScript + Vite + Tailwind CSS** housed within a **Tauri 2** desktop configuration.
+CHRONOS provides a high-density operational telemetry and failure-injection console for distributed systems. The frontend is built as a pure web application using **React 18 + TypeScript + Vite + Tailwind CSS**.
 
-In M1, the interface operates in **PREVIEW MODE** using realistic, schema-accurate demo datasets (including normal checkout and controlled failure experiment traces). No real Docker calls or destructive failure injections are executed in this milestone.
+The interface operates with dual mode capability:
+- **LIVE MODE:** Connects to the local FastAPI backend (default: `http://127.0.0.1:8000`), streams real event telemetry, executes active order checkouts, and injects controlled microservice container failures. Protected by Amazon Cognito PKCE authentication.
+- **PREVIEW MODE:** Operates offline with realistic, schema-accurate demo datasets (including normal checkout and controlled failure experiment traces) for demonstration and staging without backend connectivity.
 
 ---
 
 ## 2. Prerequisites & Environment
 
 ### Installed & Verified
-- **Node.js**: v20.20.2
-- **npm**: 10.8.2
-- **WebView2 Runtime**: Installed (156.0.4314.58)
+- **Node.js**: v20.x
+- **npm**: 10.x+
 - **Offline Typography**: 100% locally bundled via `@fontsource` (zero external CDN or remote font calls)
-- **Content Security Policy (CSP)**: Strict policy enforced in `tauri.conf.json` restricting execution to `'self'` and local backend
-
-### Required for Native Windows Compilation (`npm run tauri dev` / `tauri build`)
-- **Rust Toolchain**: `rustup` with `stable-x86_64-pc-windows-msvc` (`cargo`, `rustc`)
-- **C++ Build Tools**: Microsoft Visual Studio C++ Build Tools (MSVC v143+ and Windows 10/11 SDK)
-
-> **Note on Tooling:**
-> When the Rust and MSVC C++ toolchains are not yet installed on the host machine, the frontend can be built, verified, and run with full operational fidelity using the Vite development server (`npm run dev`) or production preview server (`npm run preview`).
 
 ---
 
@@ -40,17 +33,14 @@ From the `frontend/` directory:
 # Install dependencies
 npm install
 
+# Start the Vite development server (port 5173)
+npm run dev
+
 # Type-check and produce production bundle
 npm run build
 
-# Start the Vite development server (port 1420)
-npm run dev
-
 # Preview the production build locally
-npm run preview -- --port 1420
-
-# Launch native Tauri desktop shell (requires Rust & MSVC)
-npm run tauri dev
+npm run preview
 ```
 
 ---

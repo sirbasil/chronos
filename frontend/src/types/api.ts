@@ -19,6 +19,21 @@ export interface RunSummaryResponse {
 
 export type CreateRunResponse = RunSummaryResponse;
 
+export interface CheckoutResponse {
+  order_id: number;
+  item?: string;
+  status?: string;
+  payment_status?: string;
+  [key: string]: unknown;
+}
+
+export interface FailureInjectionResponse {
+  status: string;
+  run_id: string;
+  target: string;
+  action: string;
+}
+
 export interface TopologyNode {
   id: string;
   service_id: string;

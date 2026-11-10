@@ -213,7 +213,6 @@ chronos/
     │   ├── components/monitor/            # MetricsCluster, MonitorView, ServiceMatrix, TraceInstrument
     │   ├── services/chronosApi.ts         # Central typed REST API client with Bearer token injection
     │   └── types/                         # TypeScript interfaces (api.ts, events.ts, ui.ts)
-    └── src-tauri/                         # Tauri 2 native desktop configuration and assets
 ```
 
 ---
@@ -236,7 +235,7 @@ chronos/
 | Backend testing | pytest 9.2 (106 tests) | **Implemented & Verified** |
 | Authentication | Amazon Cognito User Pool (`ap-south-1`) | **Implemented & Verified** |
 | Frontend Auth SDK | AWS Amplify v6 (`aws-amplify@6.22.2`) | **Implemented & Verified** |
-| Desktop shell | Tauri 2 | **Configured (M1.5); Standalone release pending** |
+| Frontend Architecture | Browser-based Web Application (React 18 + Vite) | **Implemented & Verified** |
 | OpenTelemetry | OTel capture adapter | **Deferred to post-MVP** |
 
 ### User's learning preference
@@ -709,7 +708,7 @@ EC2 (t3a.medium, Ubuntu 24.04 LTS, 40GB gp3)
   - `ed878b8`: Clean up formatting in AWS Cognito setup guide.
   - `5a1ce0f`: Add AWS production deployment configuration.
   - `913d06b`: Add frontend run creation workflow.
-- **Working tree status:** clean tracked working tree; untracked Tauri assets (`frontend/src-tauri/gen/`, `frontend/src-tauri/icons/`) preserved.
+- **Working tree status:** browser-based web frontend configured on Vite port 5173.
 
 ---
 
@@ -744,8 +743,7 @@ EC2 (t3a.medium, Ubuntu 24.04 LTS, 40GB gp3)
 | **Slice 3** | Topology REST endpoint & React Flow | **COMPLETE & FROZEN** | `GET /runs/{id}/topology`, `@xyflow/react` |
 | **Slice 4** | Controlled container-kill failure experiment | **PARTIAL / IN PROGRESS** | Backend API & controller verified; UI trigger in M3 |
 | **Slice 5** | Timeline playback & event inspection | **PARTIAL / IN PROGRESS** | Static timeline & inspector complete; playback controls in M3 |
-| **M1** | Desktop instrument shell | **COMPLETE & FROZEN** | Bertone cockpit theme & telemetry clusters |
-| **M1.5** | Native desktop launch preparation | **COMPLETE & FROZEN** | Tauri 2 desktop shell configuration |
+| **M1** | Browser instrument console | **COMPLETE & FROZEN** | Bertone cockpit theme & telemetry clusters |
 | **M2** | Live backend integration & topology | **COMPLETE & FROZEN** | Real API integration, React Flow, run catalog |
 | **M3** | Failure orchestration & timeline playback | **NEXT ACTIVITY** | UI failure trigger & playback controls |
 
@@ -765,7 +763,7 @@ EC2 (t3a.medium, Ubuntu 24.04 LTS, 40GB gp3)
 - [ ] Interactive timeline playback controls (play, pause, step) (Slice 5 / M3).
 - [x] Automated test suite covers critical paths (106 tests passing).
 - [x] Secrets and credentials excluded from repository.
-- [ ] Final standalone packaged Windows Tauri desktop binary verification.
+- [x] Browser-based web deployment verified.
 
 ---
 
@@ -798,7 +796,6 @@ EC2 (t3a.medium, Ubuntu 24.04 LTS, 40GB gp3)
 
 1. **M3 failure trigger UI:** build the frontend failure injection button linked to `POST /runs/{run_id}/failure`.
 2. **M3 interactive playback:** build play/pause/step controls on the event timeline.
-3. **Packaged desktop verification:** compile and test standalone Windows Tauri binary.
 
 ---
 

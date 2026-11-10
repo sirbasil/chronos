@@ -8,6 +8,8 @@ import {
   getRuns,
   getRun,
   createRun,
+  checkoutOrder,
+  injectFailure,
   getRunEvents,
   getRunTopology,
   buildChronosRun,
@@ -46,6 +48,17 @@ const CockpitApp: React.FC = () => {
   const [isCreatingRun, setIsCreatingRun] = useState<boolean>(false);
   const [runCreationError, setRunCreationError] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Active Experiment Execution States
+  const [isExecutingCheckout, setIsExecutingCheckout] = useState<boolean>(false);
+  const [isInjectingFailure, setIsInjectingFailure] = useState<boolean>(false);
+  const [lastExecutionResult, setLastExecutionResult] = useState<{
+    status: number;
+    message: string;
+    details?: string;
+  } | null>(null);
+  const [executionError, setExecutionError] = useState<string | null>(null);
+  const selectedRunIdRef = useRef<string | null>(null);
 
   // Runs & Active Data
   const [liveRuns, setLiveRuns] = useState<ChronosRun[]>([]);
@@ -115,6 +128,7 @@ const CockpitApp: React.FC = () => {
 
         setCurrentRun(summary);
         setLiveTopology(topology);
+        selectedRunIdRef.current = runId;
 
         // Update selected event and timeline
         const initialEvent =
@@ -182,9 +196,12 @@ const CockpitApp: React.FC = () => {
 
       setLiveRuns(convertedRuns);
 
-      // Select latest completed run, or first run if none completed
-      const defaultRun = convertedRuns.find((r) => r.status === 'COMPLETED') || convertedRuns[0];
-      await loadLiveRunDetails(defaultRun.run_id, convertedRuns);
+      // Preserve currently selected run if present in the fresh list, otherwise select latest run (or first)
+      const preservedRun = selectedRunIdRef.current
+        ? convertedRuns.find((r) => r.run_id === selectedRunIdRef.current)
+        : null;
+      const targetRun = preservedRun || convertedRuns[0];
+      await loadLiveRunDetails(targetRun.run_id, convertedRuns);
     } catch (err: unknown) {
       console.error('Live backend connection error:', err);
       setConnectionState('DISCONNECTED');
@@ -269,6 +286,9 @@ const CockpitApp: React.FC = () => {
 
   // When switching runs from selector
   const handleSelectRun = (newRun: ChronosRun) => {
+    selectedRunIdRef.current = newRun.run_id;
+    setLastExecutionResult(null);
+    setExecutionError(null);
     if (mode === 'LIVE') {
       loadLiveRunDetails(newRun.run_id);
     } else {
@@ -287,10 +307,13 @@ const CockpitApp: React.FC = () => {
     if (isCreatingRun || mode !== 'LIVE') return;
     setIsCreatingRun(true);
     setRunCreationError(null);
+    setLastExecutionResult(null);
+    setExecutionError(null);
 
     try {
       const newRunSummary = await createRun();
       const newRunId = newRunSummary.run_id;
+      selectedRunIdRef.current = newRunId;
 
       // Refresh runs list from backend
       const summaries = await getRuns(50);
@@ -334,6 +357,95 @@ const CockpitApp: React.FC = () => {
       setRunCreationError(message);
     } finally {
       setIsCreatingRun(false);
+    }
+  };
+
+  // Execute checkout for Order 101 associated with current run ID
+  const handleExecuteCheckout = async () => {
+    if (isExecutingCheckout || mode !== 'LIVE' || !currentRun.run_id) return;
+    setIsExecutingCheckout(true);
+    setExecutionError(null);
+
+    const targetRunId = currentRun.run_id;
+
+    try {
+      const res = await checkoutOrder(101, targetRunId);
+      setLastExecutionResult({
+        status: 200,
+        message: `Order 101 checkout completed successfully (${res.payment_status || 'approved'})`,
+        details: `Item: ${res.item || 'Keyboard'}, Status: ${res.status || 'completed'}`,
+      });
+
+      // Reload full events, traces and topology for this run
+      await loadLiveRunDetails(targetRunId);
+
+      // Refresh runs list to show updated status
+      const summaries = await getRuns(50);
+      const convertedRuns: ChronosRun[] = summaries.map((s) => ({
+        run_id: s.run_id,
+        started_at: s.started_at,
+        completed_at: s.completed_at ?? null,
+        status: s.status,
+        description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
+        is_failure_experiment: false,
+        events: [],
+      }));
+      setLiveRuns(convertedRuns);
+    } catch (err: unknown) {
+      console.error('Checkout execution error:', err);
+      const message =
+        (err as { message?: string })?.message ||
+        (err instanceof Error ? err.message : 'Checkout execution request failed');
+      setExecutionError(message);
+
+      // Even on failure (e.g. 502/503 from payment), backend finalizes run as FAILED and persists events
+      try {
+        await loadLiveRunDetails(targetRunId);
+        const summaries = await getRuns(50);
+        const convertedRuns: ChronosRun[] = summaries.map((s) => ({
+          run_id: s.run_id,
+          started_at: s.started_at,
+          completed_at: s.completed_at ?? null,
+          status: s.status,
+          description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
+          is_failure_experiment: false,
+          events: [],
+        }));
+        setLiveRuns(convertedRuns);
+      } catch {
+        // secondary catch ignored
+      }
+    } finally {
+      setIsExecutingCheckout(false);
+    }
+  };
+
+  // Inject failure into payment service for the current run
+  const handleInjectFailure = async () => {
+    if (isInjectingFailure || mode !== 'LIVE' || !currentRun.run_id) return;
+    setIsInjectingFailure(true);
+    setExecutionError(null);
+
+    const targetRunId = currentRun.run_id;
+
+    try {
+      const res = await injectFailure(targetRunId, 'payment');
+      setLastExecutionResult({
+        status: 200,
+        message: `Payment failure injected: Target '${res.target}', Action '${res.action}'`,
+        details: 'Restart policy: unless-stopped (Docker auto-restarts payment container in ~5-10s)',
+      });
+
+      // Reload run details to immediately surface FAILURE_INJECTED event
+      await loadLiveRunDetails(targetRunId);
+    } catch (err: unknown) {
+      console.error('Failure injection error:', err);
+      const message =
+        (err as { message?: string })?.message ||
+        (err instanceof Error ? err.message : 'Failure injection request failed');
+      setExecutionError(message);
+    } finally {
+      setIsInjectingFailure(false);
     }
   };
 
@@ -500,6 +612,8 @@ const CockpitApp: React.FC = () => {
         }}
         user={user}
         onSignOut={signOut}
+        onCreateRun={handleCreateRun}
+        isCreatingRun={isCreatingRun}
       />
 
       {/* 2. Main Middle Workspace: Left Persistent Navigation Rail + Center Instrument + Right Inspector */}
@@ -562,6 +676,22 @@ const CockpitApp: React.FC = () => {
               onTimeChange={setCurrentTimeMs}
               onSelectMetric={handleSelectMetric}
               mode={mode}
+              isExecutingCheckout={isExecutingCheckout}
+              isInjectingFailure={isInjectingFailure}
+              failureInjected={
+                currentRun.events.some((e) => e.event_type === 'FAILURE_INJECTED') ||
+                currentRun.is_failure_experiment
+              }
+              checkoutExecuted={
+                currentRun.status !== 'IN_PROGRESS' ||
+                currentRun.events.some((e) => e.event_type === 'REQUEST_END')
+              }
+              lastExecutionResult={lastExecutionResult}
+              executionError={executionError}
+              onExecuteCheckout={handleExecuteCheckout}
+              onInjectFailure={handleInjectFailure}
+              onDismissExecutionError={() => setExecutionError(null)}
+              user={user}
             />
           ) : currentDestination === 'TOPOLOGY' ? (
             <TopologyView

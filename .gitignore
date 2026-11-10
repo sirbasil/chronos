@@ -9,3 +9,6 @@ dist/
 build/
 target/
 *.egg-info/
+backups/
+*.dump
+*.dump.sha256
