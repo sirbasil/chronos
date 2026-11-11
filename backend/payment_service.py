@@ -6,6 +6,12 @@ app = FastAPI()
 class PaymentRequest(BaseModel):
     order_id : int
 
+@app.get("/health")
+def health_check():
+    """Lightweight liveness/readiness endpoint for Payment service."""
+    return {"status": "ok", "service": "payment"}
+
+
 @app.post("/payments")
 def create_payment(payment : PaymentRequest):
     return {

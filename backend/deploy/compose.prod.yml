@@ -20,9 +20,10 @@ services:
 
   payment:
     image: chronos-payment:mvp-2026-11-08
-    restart: unless-stopped
+    # Keep payment stopped after SIGKILL so controlled failure injection stays deterministic until manual start.
+    restart: "no"
     healthcheck:
-      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/docs')\"" ]
+      test: [ "CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8001/health')\"" ]
       interval: 5s
       timeout: 5s
       retries: 10
