@@ -48,10 +48,10 @@ CHRONOS is deployed using an MVP single-host architecture balancing operational 
 | :--- | :--- | :--- | :--- | :--- |
 | **Frontend** | AWS Amplify Hosting | Hosts React/Vite bundle, handles Cognito PKCE authentication, renders live topology & metrics. | Public CDN / HTTPS | Operational |
 | **Reverse Proxy** | Caddy v2 (Host Service) | Terminates TLS for `chronos-mvp.duckdns.org`, automatic ACME certificates via Let's Encrypt, HTTP-to-HTTPS redirect, proxies API requests to `127.0.0.1:8000`. | Public `0.0.0.0:80,443` | Operational |
-| **Orders API** | FastAPI / Python 3.12 | Core backend service: JWT verification, database persistence, payment orchestration, and failure trigger dispatch. | Localhost `127.0.0.1:8000` | Operational |
-| **Payment Service** | FastAPI / Python 3.12 | Simulated payment processing gateway with configurable latency and error injection. | Private Docker network only | Operational |
+| **Orders API** | FastAPI / Python 3.14 | Core backend service: JWT verification, database persistence, payment orchestration, and failure trigger dispatch. | Localhost `127.0.0.1:8000` | Operational |
+| **Payment Service** | FastAPI / Python 3.14 | Simulated payment processing gateway with configurable latency and error injection. | Private Docker network only | Operational |
 | **Database** | PostgreSQL 16 (Alpine) | Persists order history, failure events, and system run logs. Uses persistent volume `01-http-basics_postgres_data`. | Private Docker network only | Operational |
-| **Failure Controller** | Python 3.12 / Docker SDK | Privileged execution daemon for controlled container failure injection. Isolated on an internal-only Docker network with non-root UID 1001 and mapped `DOCKER_GID`. | Internal network `failure-control` only | Operational |
+| **Failure Controller** | Python 3.14 / Docker SDK | Privileged execution daemon for controlled container failure injection. Isolated on an internal-only Docker network with non-root UID 1001 and mapped `DOCKER_GID`. | Internal network `failure-control` only | Operational |
 | **Authentication** | Amazon Cognito | Manages user identity, MFA, and RBAC groups (`chronos-admins`, `chronos-operators`). | Managed Cloud Service | Operational |
 | **Host Management** | AWS Systems Manager | Secure remote shell access without opening port 22 or managing SSH key pairs. | Outbound HTTPS agent | Operational |
 | **Database Backups** | Amazon S3 | Verified custom-format pg_dump storage with 14-day automated lifecycle expiration. | S3 VPC Endpoint / HTTPS | Verified & Tested |
@@ -104,7 +104,7 @@ ENABLE_FAILURE_INJECTION=true
 # --- Failure Controller Security ---
 FAILURE_CONTROLLER_URL=http://failure-controller:8002
 FAILURE_CONTROLLER_TOKEN=<32_BYTE_HEX_RANDOM_SECRET>
-DOCKER_GID=999  # Host Docker GID determined via: stat -c '%g' /var/run/docker.sock
+DOCKER_GID=988  # Verified EC2 host Docker GID; re-verify via: stat -c '%g' /var/run/docker.sock
 
 # --- Amazon Cognito Authentication & RBAC ---
 APP_ENV=production
@@ -137,7 +137,7 @@ cd /opt/chronos
 ```
 
 ### Managing the Docker Compose Stack
-The production Compose definition is deployed at `/opt/chronos/backend/deploy/compose.prod.yml`:
+The production Compose definition is deployed at `/opt/chronos/config/compose.prod.yml`:
 ```bash
 # Check running container status and health
 docker compose -f /opt/chronos/config/compose.prod.yml ps
@@ -207,7 +207,11 @@ Ahead of the professor demonstration, execute the following pre-flight verificat
    ```
    *Result:* Orders attempts payment, encounters connection error (503), emits `SERVICE_ERROR`, and finalizes with `REQUEST_END` (`FAILED`).
 4. **Inspect in Dashboard:** Visual playback highlights the killed container, error timeline event, and degraded topology edge.
-5. **Recovery:** Docker's `restart: unless-stopped` automatically restarts the payment container within ~10 seconds.
+5. **Manual Recovery (Test C):** Because `payment` sets `restart: "no"` in `compose.prod.yml` to prevent race-condition auto-restarts before checkout, recover Payment explicitly via AWS SSM:
+   ```bash
+   docker compose -f /opt/chronos/config/compose.prod.yml start payment
+   ```
+   Verify `/health` returns `payment: "healthy"`, then execute a fresh Run + Checkout to confirm `HTTP 200 COMPLETED` recovery.
 
 ---
 

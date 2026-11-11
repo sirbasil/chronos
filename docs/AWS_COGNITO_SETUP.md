@@ -64,7 +64,7 @@ COGNITO_ADMIN_GROUP=chronos-admins
 COGNITO_OPERATOR_GROUP=chronos-operators
 
 # CORS Allowed Origins (Comma-separated, no wildcards allowed)
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173,http://localhost:1420,http://127.0.0.1:1420,http://tauri.localhost
+CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 # Failure Injection Flag (Controlled container testing)
 ENABLE_FAILURE_INJECTION=false

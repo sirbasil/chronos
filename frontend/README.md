@@ -45,44 +45,31 @@ npm run preview
 
 ---
 
-## 4. Key Interactive Capabilities in M1
+## 4. Key Interactive Capabilities
 
-1. **Multi-Track Event Trace**:
-   - Time-ordered lanes for `orders`, `payment`, and `postgres`.
+1. **Multi-Track Event Trace & Failure Experiment Workflow**:
+   - Time-ordered lanes for `orders`, `payment`, and `postgres` anchored at checkout execution start (`T=0`), with a dedicated `PRE` bay for pre-execution `FAILURE_INJECTED` events.
    - Hover over event markers to view live event type, service, and summary tooltip.
    - Click any event marker to pin its complete JSONB payload and diagnostic metadata into the Context Inspector.
    - Interactive time cursor: drag or click across the timeline to scrub time `T+...ms`.
-   - Zoom controls (`0.75X` – `2.5X`) and `T=0` reset affordance.
+   - Zoom controls (`0.75X` – `2.5X`) and `RESET T=0` affordance.
+   - Create runs (`POST /runs`), trigger RBAC-protected Payment failure injection (`POST /runs/{id}/failure`), and execute checkout (`POST /orders/101/checkout` with `X-Run-ID`).
 
-2. **Service Matrix**:
-   - Status indicators (`HEALTHY`, `OBSERVED`, `DEGRADED`) and port allocations.
-   - Inbound, outbound, and error counters derived from recorded events.
+2. **Service Matrix & Live `/health` Probes**:
+   - Status indicators (`HEALTHY`, `RECOVERED`, `DEGRADED`, `FAILED`, `OBSERVED`) and port allocations.
+   - Inbound, outbound, and error counters derived chronologically from recorded events and `/health` probes.
    - Click a service card to illuminate its track and inspect service telemetry in the Inspector.
 
-3. **Digital Readouts & Metrics Cluster**:
-   - Segmented digital readout frames with vintage amber/phosphor glows and background ghost digits.
-   - Live metrics for run duration, recorded events, observed services, and injected failures.
-
-4. **Collapsible Context Inspector**:
-   - Collapsible right drawer (via toggle button, close icon, or `Escape` key).
-   - Preserves active selection state across open/close cycles.
-   - Contextual views for:
-     - Events (payload, offset, severity, trace ID)
-     - Services (network ports, container names, traffic summary)
-     - Backend status (FastAPI host, persistence state, endpoints)
-     - Docker status (Compose project name, socket mount rules, safety policy)
-     - Run summary (UUID, start/completion times, status)
-
-5. **Run Context Switching**:
-   - Header dropdown allows switching between **Demo Run 1 (Controlled Payment Failure)** and **Demo Run 2 (Normal Checkout Happy Path)**.
-
-6. **Honest Unimplemented Navigation States**:
-   - `RUNS`, `TOPOLOGY`, `EXPERIMENTS`, `ARCHIVE`, and `SETTINGS` display honest "NOT IMPLEMENTED IN M1" panels detailing the scheduled milestone roadmap.
+3. **Collapsible Context Inspector & Topology**:
+   - Interactive React Flow (`@xyflow/react`) DAG in `TOPOLOGY` view derived from `GET /runs/{id}/topology`.
+   - Run catalog in `RUNS` view (`COMPLETED`, `FAILED`, `IN_PROGRESS`) with one-click run loading.
+   - Collapsible right drawer (`Escape` or toggle button) inspecting events, services, FastAPI/DB/Payment `/health`, Compose policy, and run metadata.
 
 ---
 
-## 5. M1 Safety & Non-Destructive Boundaries
+## 5. Security & Operational Boundaries
 
-- All backend code (`backend/`), Docker Compose files (`backend/docker-compose*.yml`), and Python test suites remain completely untouched.
-- No network requests are made to kill containers or trigger checkout workflows.
+- Failure injection routes from `orders` to the isolated `failure-controller` sidecar over the internal Docker network (`payment` allowlist only) and requires `chronos-admins` or `chronos-operators` Cognito group membership.
+- Browser preview mode (`PREVIEW`) renders clearly labeled simulated fixtures offline without mutating backend state.
+- Local development uses `backend/docker-compose.yml` (Payment stops after `SIGKILL` until manually restarted via `docker compose start payment`).
 - No credentials or `.env` files are tracked in version control.
