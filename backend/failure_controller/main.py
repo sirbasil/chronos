@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import hmac
 import logging
 import os
+import time
 from typing import Any
 
 import docker
@@ -108,7 +109,53 @@ class FailureResultResponse(BaseModel):
     container_id: str
     container_name: str
     compose_project: str
+    container_state: str | None = None
     timestamp: str | None = None
+
+
+POST_KILL_MAX_POLLS = 10
+POST_KILL_POLL_INTERVAL_SEC = 0.05
+
+
+def _verify_container_stopped(container: Any) -> str:
+    """Reload container state up to bounded attempts to confirm SIGKILL stopped it."""
+    for attempt in range(POST_KILL_MAX_POLLS):
+        try:
+            container.reload()
+        except docker.errors.NotFound:
+            return "removed"
+        except docker.errors.APIError as err:
+            logger.error(
+                "Docker API error verifying post-kill state for %s: %s",
+                getattr(container, "id", "unknown"),
+                err,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Docker API error while verifying post-kill container state: {err}",
+            )
+        except docker.errors.DockerException as err:
+            logger.error(
+                "Docker daemon unavailable verifying post-kill state for %s: %s",
+                getattr(container, "id", "unknown"),
+                err,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Docker daemon unavailable while verifying post-kill container state",
+            )
+
+        current_state = getattr(container, "status", "unknown")
+        if current_state != "running":
+            return str(current_state)
+
+        if attempt < POST_KILL_MAX_POLLS - 1:
+            time.sleep(POST_KILL_POLL_INTERVAL_SEC)
+
+    raise HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=f"Kill verification failed: container '{getattr(container, 'name', 'unknown')}' is still running",
+    )
 
 
 @app.get("/health")
@@ -230,7 +277,7 @@ def kill_payment_container(
                 detail=f"Container '{container.name}' is not running (current status: '{container.status}')",
             )
 
-        # 5. Execute kill action
+        # 5. Execute kill action and verify container transitioned out of running state
         try:
             container.kill()
         except docker.errors.APIError as err:
@@ -246,6 +293,8 @@ def kill_payment_container(
                 detail="Docker daemon unavailable",
             )
 
+        final_state = _verify_container_stopped(container)
+
         return {
             "status": "injected",
             "target": expected_service,
@@ -253,6 +302,7 @@ def kill_payment_container(
             "container_id": getattr(container, "id", "unknown"),
             "container_name": getattr(container, "name", "unknown"),
             "compose_project": project_name,
+            "container_state": final_state,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
     finally:

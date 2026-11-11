@@ -63,7 +63,11 @@ def _mock_container(
         "com.docker.compose.service": service,
     }
     mock.reload = MagicMock()
-    mock.kill = MagicMock()
+
+    def _simulate_kill():
+        mock.status = "exited"
+
+    mock.kill = MagicMock(side_effect=_simulate_kill)
     return mock
 
 
@@ -119,7 +123,8 @@ def test_controller_valid_bearer_token_success():
         assert data["action"] == "kill"
         assert data["container_id"] == "payment_cid_123"
         assert data["compose_project"] == TEST_PROJECT
-        mock_c.reload.assert_called_once()
+        assert data["container_state"] == "exited"
+        assert mock_c.reload.call_count == 2
         mock_c.kill.assert_called_once()
         mock_docker.close.assert_called_once()
 
@@ -365,3 +370,109 @@ def test_controller_rejects_arbitrary_targets():
         headers={"Authorization": f"Bearer {TEST_TOKEN}"},
     )
     assert resp_postgres.status_code in (404, 405)
+
+
+# ===========================================================================
+# 5. Post-Kill State Verification Tests
+# ===========================================================================
+
+def test_controller_post_kill_polls_until_exited():
+    """Post-kill verification polls reload() until container transitions out of running."""
+    mock_c = _mock_container()
+    reload_count = 0
+
+    def staged_reload():
+        nonlocal reload_count
+        reload_count += 1
+        # Call 1 = pre-kill (running), Call 2 = post-kill attempt 1 (still running),
+        # Call 3 = post-kill attempt 2 (exited)
+        if reload_count >= 3:
+            mock_c.status = "exited"
+
+    mock_c.reload = MagicMock(side_effect=staged_reload)
+    mock_c.kill = MagicMock()  # keep running initially to verify polling
+    mock_docker = MagicMock()
+    mock_docker.containers.list.return_value = [mock_c]
+
+    with (
+        patch("failure_controller.main.get_docker_client", return_value=mock_docker),
+        patch("failure_controller.main.time.sleep") as mock_sleep,
+    ):
+        resp = controller_client.post(
+            "/internal/failures/payment/kill",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["container_state"] == "exited"
+        assert reload_count == 3
+        mock_sleep.assert_called()
+
+
+def test_controller_post_kill_still_running_fails_502():
+    """If container stays running after bounded post-kill polls, controller fails with 502."""
+    mock_c = _mock_container()
+    mock_c.kill = MagicMock()  # does not transition status away from running
+    mock_docker = MagicMock()
+    mock_docker.containers.list.return_value = [mock_c]
+
+    with (
+        patch("failure_controller.main.get_docker_client", return_value=mock_docker),
+        patch("failure_controller.main.time.sleep"),
+    ):
+        resp = controller_client.post(
+            "/internal/failures/payment/kill",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 502
+        assert "still running" in resp.json()["detail"].lower()
+        mock_docker.close.assert_called_once()
+
+
+def test_controller_post_kill_reload_api_error_fails_502():
+    """Docker APIError during post-kill verification must surface 502."""
+    mock_c = _mock_container()
+    calls = 0
+
+    def reload_fails_after_kill():
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise docker.errors.APIError("Inspect error after kill")
+
+    mock_c.reload = MagicMock(side_effect=reload_fails_after_kill)
+    mock_docker = MagicMock()
+    mock_docker.containers.list.return_value = [mock_c]
+
+    with patch("failure_controller.main.get_docker_client", return_value=mock_docker):
+        resp = controller_client.post(
+            "/internal/failures/payment/kill",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 502
+        assert "post-kill container state" in resp.json()["detail"].lower()
+        mock_docker.close.assert_called_once()
+
+
+def test_controller_post_kill_not_found_returns_removed_200():
+    """If container disappears (auto-removed) immediately after kill, report 'removed' cleanly."""
+    mock_c = _mock_container()
+    calls = 0
+
+    def reload_removed():
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise docker.errors.NotFound("Container removed")
+
+    mock_c.reload = MagicMock(side_effect=reload_removed)
+    mock_docker = MagicMock()
+    mock_docker.containers.list.return_value = [mock_c]
+
+    with patch("failure_controller.main.get_docker_client", return_value=mock_docker):
+        resp = controller_client.post(
+            "/internal/failures/payment/kill",
+            headers={"Authorization": f"Bearer {TEST_TOKEN}"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["container_state"] == "removed"
+        mock_docker.close.assert_called_once()
