@@ -4,8 +4,10 @@ Communicates with the isolated internal failure-controller over the private Dock
 The Orders service has NO Docker daemon socket mount and NO Docker SDK dependency.
 """
 
+from datetime import datetime, timezone
 import logging
 import os
+import threading
 import time
 from typing import Any
 from uuid import UUID
@@ -13,10 +15,21 @@ from uuid import UUID
 from fastapi import HTTPException, status
 import requests
 
-from database import get_events_by_run, save_event
+from database import save_event, verify_failure_injection_permitted
 from event_schema import ChronosEvent
 
 logger = logging.getLogger(__name__)
+
+# Single-flight in-process guard preventing concurrent kill requests for the same run_id
+# without holding database locks open across external HTTP calls to failure-controller.
+_active_injection_runs: set[UUID] = set()
+_active_injection_lock = threading.Lock()
+
+
+def is_failure_injection_in_progress(run_id: UUID) -> bool:
+    """Return True if a failure injection request is currently active for `run_id`."""
+    with _active_injection_lock:
+        return run_id in _active_injection_runs
 
 # Strict allowlist of supported failure targets
 ALLOWED_TARGETS: dict[str, dict[str, Any]] = {
@@ -71,32 +84,81 @@ def inject_failure(target: str, run_id: UUID) -> dict[str, Any]:
             detail=f"Unsupported failure target '{target}'. Allowed targets: {sorted(ALLOWED_TARGETS.keys())}",
         )
 
-    # 3. Check if failure has already been injected for this run to avoid duplicate events
+    # 3. Single-flight reservation per run_id (released after DB persistence finishes)
+    with _active_injection_lock:
+        if run_id in _active_injection_runs:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Failure injection already in progress for run {run_id}",
+            )
+        _active_injection_runs.add(run_id)
+
     try:
-        existing_events = get_events_by_run(run_id)
-        if any(e.event_type == "FAILURE_INJECTED" for e in existing_events):
+        # 4. Fail-closed DB eligibility verification using short row-locked transaction
+        try:
+            perm_status, run_row = verify_failure_injection_permitted(run_id)
+        except Exception as pre_err:
+            logger.error(
+                "Fail-closed abort: unable to verify run eligibility for run_id=%s: %s",
+                run_id,
+                pre_err,
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Unable to verify run eligibility for failure injection (database error)",
+            )
+
+        if perm_status == "NOT_FOUND":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Run not found")
+        if perm_status == "NOT_IN_PROGRESS":
+            current_status = run_row["status"] if run_row else "unknown"
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Run {run_id} is not in progress (status: {current_status})",
+            )
+        if perm_status == "ALREADY_INJECTED":
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Failure injection already recorded for run {run_id}",
             )
-    except HTTPException:
-        raise
-    except Exception as pre_err:
-        logger.warning("Could not pre-check existing events for run %s: %s", run_id, pre_err)
+        if perm_status == "CHECKOUT_ALREADY_STARTED":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Checkout already started for run {run_id}; cannot inject failure",
+            )
 
-    # 4. Check internal service credentials
-    controller_token = get_failure_controller_token()
-    if not controller_token:
-        logger.error("FAILURE_CONTROLLER_TOKEN is not configured in Orders service")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failure controller authentication unconfigured",
-        )
+        # 5. Check internal service credentials
+        controller_token = get_failure_controller_token()
+        if not controller_token:
+            logger.error("FAILURE_CONTROLLER_TOKEN is not configured in Orders service")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failure controller authentication unconfigured",
+            )
 
-    controller_url = get_failure_controller_url()
-    endpoint = f"{controller_url}/internal/failures/payment/kill"
+        controller_url = get_failure_controller_url()
+        endpoint = f"{controller_url}/internal/failures/payment/kill"
 
-    # 4. Invoke internal failure-controller over private network
+        # 6. Invoke internal failure-controller over private network (no DB lock held)
+        controller_result = _invoke_controller_kill(endpoint, controller_token)
+
+        # 7. Save FAILURE_INJECTED ChronosEvent in PostgreSQL with bounded retries
+        _persist_failure_event_with_retries(run_id, target, controller_result)
+
+        return {
+            "status": "injected",
+            "run_id": str(run_id),
+            "target": target,
+            "action": "kill",
+        }
+    finally:
+        with _active_injection_lock:
+            _active_injection_runs.discard(run_id)
+
+
+def _invoke_controller_kill(endpoint: str, controller_token: str) -> dict[str, Any]:
+    """Call internal failure-controller kill endpoint and normalize error responses."""
     try:
         resp = requests.post(
             endpoint,
@@ -125,7 +187,6 @@ def inject_failure(target: str, run_id: UUID) -> dict[str, Any]:
             detail=f"Failure controller communication error: {err}",
         )
 
-    # 5. Handle controller response status
     if resp.status_code != status.HTTP_200_OK:
         detail_msg = f"Failure controller returned HTTP {resp.status_code}"
         try:
@@ -150,25 +211,53 @@ def inject_failure(target: str, run_id: UUID) -> dict[str, Any]:
         else:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail_msg)
 
-    controller_result = resp.json()
+    return resp.json()
 
-    # 6. Save FAILURE_INJECTED ChronosEvent in PostgreSQL with bounded retries
+
+def _parse_controller_timestamp(raw_timestamp: Any) -> datetime:
+    """Parse failure-controller ISO-8601 timestamp as timezone-aware UTC datetime."""
+    if isinstance(raw_timestamp, str) and raw_timestamp.strip():
+        candidate = raw_timestamp.strip()
+        if candidate.endswith("Z"):
+            candidate = f"{candidate[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            if parsed.tzinfo is None:
+                return parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return datetime.now(timezone.utc)
+
+
+def _persist_failure_event_with_retries(
+    run_id: UUID,
+    target: str,
+    controller_result: dict[str, Any],
+) -> None:
+    """Persist FAILURE_INJECTED event in PostgreSQL with bounded retries."""
     container_id = controller_result.get("container_id", "unknown")
     container_name = controller_result.get("container_name", "unknown")
     compose_project = controller_result.get("compose_project", "01-http-basics")
+    event_timestamp = _parse_controller_timestamp(controller_result.get("timestamp"))
+
+    payload: dict[str, Any] = {
+        "target": target,
+        "action": "kill",
+        "container_id": container_id,
+        "container_name": container_name,
+        "compose_project": compose_project,
+    }
+    if controller_result.get("container_state"):
+        payload["container_state"] = controller_result["container_state"]
 
     failure_event = ChronosEvent(
         run_id=run_id,
+        timestamp=event_timestamp,
         service_id="orders",
         event_type="FAILURE_INJECTED",
         source="chronos-control",
-        payload={
-            "target": target,
-            "action": "kill",
-            "container_id": container_id,
-            "container_name": container_name,
-            "compose_project": compose_project,
-        },
+        payload=payload,
         severity="WARNING",
     )
 
@@ -217,10 +306,3 @@ def inject_failure(target: str, run_id: UUID) -> dict[str, Any]:
                 f"Database error: {last_db_err}. Manual state verification required."
             ),
         )
-
-    return {
-        "status": "injected",
-        "run_id": str(run_id),
-        "target": target,
-        "action": "kill",
-    }

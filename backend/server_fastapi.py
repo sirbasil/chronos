@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import logging
 import os
+from typing import Any
 from uuid import UUID, uuid4
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
@@ -16,7 +17,10 @@ from auth import (
     validate_cognito_config,
 )
 from database import (
+    check_db_health,
+    claim_run_checkout,
     create_run,
+    create_run_and_claim_checkout,
     get_events_by_run,
     get_run,
     init_db,
@@ -25,7 +29,7 @@ from database import (
     update_run_status,
 )
 from event_schema import ChronosEvent
-from failure_injector import inject_failure
+from failure_injector import inject_failure, is_failure_injection_in_progress
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +60,6 @@ app = FastAPI(lifespan=lifespan)
 DEFAULT_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
-    "http://localhost:1420",
-    "http://127.0.0.1:1420",
-    "http://tauri.localhost",
 ]
 
 
@@ -122,22 +123,32 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: datetime
     database: str
+    payment: str = "unreachable"
 
 
 @app.get("/health", response_model=HealthResponse)
 def health_check():
-    """Health check endpoint confirming API and DB connectivity."""
+    """Health check endpoint confirming Orders API, DB connectivity, and Payment reachability."""
     db_status = "connected"
     try:
-        # Lightweight probe of DB connection
-        get_run(UUID("00000000-0000-0000-0000-000000000000"))
+        if not check_db_health():
+            db_status = "disconnected"
     except Exception:
         db_status = "disconnected"
+
+    payment_status = "unreachable"
+    try:
+        resp = requests.get(f"{PAYMENT_SERVICE_URL}/health", timeout=0.5)
+        if resp.status_code == 200:
+            payment_status = "healthy"
+    except requests.exceptions.RequestException:
+        payment_status = "unreachable"
 
     return HealthResponse(
         status="ok" if db_status == "connected" else "degraded",
         timestamp=datetime.now(timezone.utc),
         database=db_status,
+        payment=payment_status,
     )
 
 
@@ -252,6 +263,45 @@ def inject_run_failure(
     )
 
 
+def _persist_service_error_safely(
+    run_id: UUID,
+    order_id: int,
+    error_type: str,
+    status_code: int | None = None,
+    detail: str | None = None,
+) -> None:
+    """Persist SERVICE_ERROR best-effort without masking the caller's HTTPException."""
+    payload: dict[str, Any] = {
+        "destination_service": "payment",
+        "order_id": order_id,
+        "error_type": error_type,
+    }
+    if status_code is not None:
+        payload["status_code"] = status_code
+    if detail is not None:
+        payload["detail"] = detail
+
+    error_event = ChronosEvent(
+        run_id=run_id,
+        service_id="orders",
+        event_type="SERVICE_ERROR",
+        source="orders-api",
+        payload=payload,
+        severity="ERROR",
+    )
+    try:
+        save_event(error_event)
+        print(error_event.model_dump_json())
+    except Exception as save_err:
+        logger.error(
+            "Failed to save SERVICE_ERROR (%s) for run %s: %s",
+            error_type,
+            run_id,
+            save_err,
+            exc_info=True,
+        )
+
+
 @app.post("/orders/{order_id}/checkout")
 def checkout_order(
     order_id: int,
@@ -260,36 +310,58 @@ def checkout_order(
     user: AuthenticatedUser = Depends(get_current_user),
 ):
     if x_run_id is not None:
-        run = get_run(x_run_id)
-        if not run:
-            raise HTTPException(
-                status_code=404,
-                detail="Run not found",
-                headers={"X-Run-ID": str(x_run_id)},
-            )
-        if run["status"] != "IN_PROGRESS":
+        if is_failure_injection_in_progress(x_run_id):
             raise HTTPException(
                 status_code=409,
-                detail=f"Run {x_run_id} is not in progress (status: {run['status']})",
+                detail=f"Failure injection is currently in progress for run {x_run_id}",
                 headers={"X-Run-ID": str(x_run_id)},
             )
         run_id = x_run_id
+        request_start = ChronosEvent(
+            run_id=run_id,
+            service_id="orders",
+            event_type="REQUEST_START",
+            source="orders-api",
+            payload={"order_id": order_id},
+            severity="INFO",
+        )
+        claim_status, run_row = claim_run_checkout(run_id, request_start)
+        if claim_status == "NOT_FOUND":
+            raise HTTPException(
+                status_code=404,
+                detail="Run not found",
+                headers={"X-Run-ID": str(run_id)},
+            )
+        if claim_status == "NOT_IN_PROGRESS":
+            current_status = run_row["status"] if run_row else "unknown"
+            raise HTTPException(
+                status_code=409,
+                detail=f"Run {run_id} is not in progress (status: {current_status})",
+                headers={"X-Run-ID": str(run_id)},
+            )
+        if claim_status == "ALREADY_CLAIMED":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Checkout already in progress or executed for run {run_id}",
+                headers={"X-Run-ID": str(run_id)},
+            )
     else:
         run_id = uuid4()
-        create_run(run_id=run_id, started_at=datetime.now(timezone.utc), status="IN_PROGRESS")
+        request_start = ChronosEvent(
+            run_id=run_id,
+            service_id="orders",
+            event_type="REQUEST_START",
+            source="orders-api",
+            payload={"order_id": order_id},
+            severity="INFO",
+        )
+        create_run_and_claim_checkout(
+            run_id=run_id,
+            start_event=request_start,
+            started_at=datetime.now(timezone.utc),
+        )
 
     response.headers["X-Run-ID"] = str(run_id)
-
-    # 2. REQUEST_START event
-    request_start = ChronosEvent(
-        run_id=run_id,
-        service_id="orders",
-        event_type="REQUEST_START",
-        source="orders-api",
-        payload={"order_id": order_id},
-        severity="INFO",
-    )
-    save_event(request_start)
     print(request_start.model_dump_json())
 
     run_status = "FAILED"
@@ -316,100 +388,105 @@ def checkout_order(
         save_event(service_call)
         print(service_call.model_dump_json())
 
+        payment_response = None
         try:
             payment_response = requests.post(
                 f"{PAYMENT_SERVICE_URL}/payments",
                 json={"order_id": order_id},
                 timeout=3,
             )
-
             payment_response.raise_for_status()
-
-            # 4. RESPONSE event
-            response_event = ChronosEvent(
-                run_id=run_id,
-                service_id="orders",
-                event_type="RESPONSE",
-                source="orders-api",
-                payload={
-                    "responding_service": "payment",
-                    "order_id": order_id,
-                    "status_code": payment_response.status_code,
-                },
-                severity="INFO",
-            )
-            save_event(response_event)
-            print(response_event.model_dump_json())
-
-            run_status = "COMPLETED"
-            return payment_response.json()
-
         except requests.exceptions.Timeout:
-            error_event = ChronosEvent(
-                run_id=run_id,
-                service_id="orders",
-                event_type="SERVICE_ERROR",
-                source="orders-api",
-                payload={
-                    "destination_service": "payment",
-                    "order_id": order_id,
-                    "error_type": "Timeout",
-                },
-                severity="ERROR",
-            )
-            save_event(error_event)
-            print(error_event.model_dump_json())
-
+            _persist_service_error_safely(run_id, order_id, error_type="Timeout")
             raise HTTPException(
                 status_code=504,
                 detail="Payment service timed out",
                 headers={"X-Run-ID": str(run_id)},
             )
-
         except requests.exceptions.ConnectionError:
-            error_event = ChronosEvent(
-                run_id=run_id,
-                service_id="orders",
-                event_type="SERVICE_ERROR",
-                source="orders-api",
-                payload={
-                    "destination_service": "payment",
-                    "order_id": order_id,
-                    "error_type": "ConnectionError",
-                },
-                severity="ERROR",
-            )
-            save_event(error_event)
-            print(error_event.model_dump_json())
-
+            _persist_service_error_safely(run_id, order_id, error_type="ConnectionError")
             raise HTTPException(
                 status_code=503,
                 detail="Payment service Unavailable",
                 headers={"X-Run-ID": str(run_id)},
             )
-
         except requests.exceptions.HTTPError:
-            error_event = ChronosEvent(
-                run_id=run_id,
-                service_id="orders",
-                event_type="SERVICE_ERROR",
-                source="orders-api",
-                payload={
-                    "destination_service": "payment",
-                    "order_id": order_id,
-                    "error_type": "HTTPError",
-                    "status_code": payment_response.status_code,
-                },
-                severity="ERROR",
+            upstream_status = payment_response.status_code if payment_response is not None else None
+            _persist_service_error_safely(
+                run_id,
+                order_id,
+                error_type="HTTPError",
+                status_code=upstream_status,
             )
-            save_event(error_event)
-            print(error_event.model_dump_json())
-
             raise HTTPException(
                 status_code=502,
                 detail="Payment service returned an error",
                 headers={"X-Run-ID": str(run_id)},
             )
+        except requests.exceptions.RequestException as req_err:
+            _persist_service_error_safely(
+                run_id,
+                order_id,
+                error_type=type(req_err).__name__,
+                detail=str(req_err),
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Payment service communication error ({type(req_err).__name__})",
+                headers={"X-Run-ID": str(run_id)},
+            )
+
+        # Parse & validate Payment JSON body before emitting RESPONSE or marking COMPLETED
+        try:
+            payment_data = payment_response.json()
+        except ValueError as json_err:
+            _persist_service_error_safely(
+                run_id,
+                order_id,
+                error_type="InvalidPaymentResponse",
+                status_code=payment_response.status_code,
+                detail=f"Malformed JSON: {json_err}",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Payment service returned malformed JSON",
+                headers={"X-Run-ID": str(run_id)},
+            )
+
+        if not isinstance(payment_data, dict) or not (
+            "payment_status" in payment_data or "status" in payment_data
+        ):
+            _persist_service_error_safely(
+                run_id,
+                order_id,
+                error_type="InvalidPaymentResponse",
+                status_code=payment_response.status_code,
+                detail="Invalid Payment response structure",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="Payment service returned an invalid response structure",
+                headers={"X-Run-ID": str(run_id)},
+            )
+
+        # 4. RESPONSE event
+        response_event = ChronosEvent(
+            run_id=run_id,
+            service_id="orders",
+            event_type="RESPONSE",
+            source="orders-api",
+            payload={
+                "responding_service": "payment",
+                "order_id": order_id,
+                "status_code": payment_response.status_code,
+            },
+            severity="INFO",
+        )
+        save_event(response_event)
+        print(response_event.model_dump_json())
+
+        run_status = "COMPLETED"
+        return payment_data
 
     finally:
         # 5. REQUEST_END event & run completion logic

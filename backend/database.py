@@ -151,6 +151,15 @@ def update_run_status(
             return cur.fetchone()
 
 
+def check_db_health() -> bool:
+    """Lightweight database connectivity check without probing sentinel IDs."""
+    with get_db_connection(autocommit=True) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 AS ok;")
+            row = cur.fetchone()
+            return bool(row and row.get("ok") == 1)
+
+
 def get_run(run_id: UUID | str) -> dict[str, Any] | None:
     """Retrieve run record by run_id."""
     if isinstance(run_id, str):
@@ -181,30 +190,160 @@ def list_runs(limit: int = 50) -> list[dict[str, Any]]:
 
 
 
+def _insert_event(cur: Any, event: ChronosEvent) -> None:
+    """Insert a single ChronosEvent using an active database cursor."""
+    cur.execute(
+        """
+        INSERT INTO events (
+            event_id, run_id, timestamp, service_id, trace_id, event_type, source, payload, severity
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s
+        );
+        """,
+        (
+            event.event_id,
+            event.run_id,
+            event.timestamp,
+            event.service_id,
+            event.trace_id,
+            event.event_type,
+            event.source,
+            Jsonb(event.payload),
+            event.severity,
+        ),
+    )
+
+
 def save_event(event: ChronosEvent) -> None:
     """Persist a single ChronosEvent in PostgreSQL."""
     with get_db_connection(autocommit=True) as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO events (
-                    event_id, run_id, timestamp, service_id, trace_id, event_type, source, payload, severity
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s
-                );
-                """,
-                (
-                    event.event_id,
-                    event.run_id,
-                    event.timestamp,
-                    event.service_id,
-                    event.trace_id,
-                    event.event_type,
-                    event.source,
-                    Jsonb(event.payload),
-                    event.severity,
-                ),
-            )
+            _insert_event(cur, event)
+
+
+def create_run_and_claim_checkout(
+    run_id: UUID | str,
+    start_event: ChronosEvent,
+    started_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Atomically create a new IN_PROGRESS run and persist its initial REQUEST_START claim."""
+    if isinstance(run_id, str):
+        run_id = UUID(run_id)
+    if started_at is None:
+        started_at = datetime.now(timezone.utc)
+
+    with get_db_connection(autocommit=False) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO runs (run_id, started_at, status)
+                    VALUES (%s, %s, %s)
+                    RETURNING run_id, started_at, completed_at, status;
+                    """,
+                    (run_id, started_at, "IN_PROGRESS"),
+                )
+                run_row = cur.fetchone()
+                _insert_event(cur, start_event)
+                return run_row
+
+
+def claim_run_checkout(
+    run_id: UUID | str,
+    start_event: ChronosEvent,
+) -> tuple[str, dict[str, Any] | None]:
+    """
+    Atomically claim exclusive checkout execution for an active run via row-level lock.
+    Holds the DB lock only for the brief state check + REQUEST_START insert, releasing it
+    before any downstream Payment HTTP request executes.
+
+    Returns:
+        ("CLAIMED", run_row) | ("NOT_FOUND", None) | ("NOT_IN_PROGRESS", run_row) | ("ALREADY_CLAIMED", run_row)
+    """
+    if isinstance(run_id, str):
+        run_id = UUID(run_id)
+
+    with get_db_connection(autocommit=False) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT run_id, started_at, completed_at, status
+                    FROM runs
+                    WHERE run_id = %s
+                    FOR UPDATE;
+                    """,
+                    (run_id,),
+                )
+                run_row = cur.fetchone()
+                if not run_row:
+                    return "NOT_FOUND", None
+                if run_row["status"] != "IN_PROGRESS":
+                    return "NOT_IN_PROGRESS", run_row
+
+                cur.execute(
+                    """
+                    SELECT 1 FROM events
+                    WHERE run_id = %s AND event_type = 'REQUEST_START'
+                    LIMIT 1;
+                    """,
+                    (run_id,),
+                )
+                if cur.fetchone():
+                    return "ALREADY_CLAIMED", run_row
+
+                _insert_event(cur, start_event)
+                return "CLAIMED", run_row
+
+
+def verify_failure_injection_permitted(
+    run_id: UUID | str,
+) -> tuple[str, dict[str, Any] | None]:
+    """
+    Atomically verify inside a short row-locked transaction whether failure injection
+    is permitted for `run_id` before releasing the lock prior to external HTTP calls.
+
+    Returns:
+        ("PERMITTED", run_row) | ("NOT_FOUND", None) | ("NOT_IN_PROGRESS", run_row)
+        | ("ALREADY_INJECTED", run_row) | ("CHECKOUT_ALREADY_STARTED", run_row)
+    """
+    if isinstance(run_id, str):
+        run_id = UUID(run_id)
+
+    with get_db_connection(autocommit=False) as conn:
+        with conn.transaction():
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT run_id, started_at, completed_at, status
+                    FROM runs
+                    WHERE run_id = %s
+                    FOR UPDATE;
+                    """,
+                    (run_id,),
+                )
+                run_row = cur.fetchone()
+                if not run_row:
+                    return "NOT_FOUND", None
+                if run_row["status"] != "IN_PROGRESS":
+                    return "NOT_IN_PROGRESS", run_row
+
+                cur.execute(
+                    """
+                    SELECT event_type FROM events
+                    WHERE run_id = %s AND event_type IN ('FAILURE_INJECTED', 'REQUEST_START')
+                    ORDER BY CASE event_type WHEN 'FAILURE_INJECTED' THEN 0 ELSE 1 END
+                    LIMIT 1;
+                    """,
+                    (run_id,),
+                )
+                existing = cur.fetchone()
+                if existing:
+                    if existing["event_type"] == "FAILURE_INJECTED":
+                        return "ALREADY_INJECTED", run_row
+                    return "CHECKOUT_ALREADY_STARTED", run_row
+
+                return "PERMITTED", run_row
 
 
 def get_events_by_run(run_id: UUID | str) -> list[ChronosEvent]:

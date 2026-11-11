@@ -324,6 +324,34 @@ def test_failure_endpoint_rejects_user_with_empty_groups(rsa_keys, mock_jwks):
         assert resp.status_code == 403
 
 
+def test_empty_group_user_allowed_checkout_but_denied_failure_injection(rsa_keys, mock_jwks):
+    """Verify RBAC split: empty-group user can create/checkout runs (201/200) but cannot inject failure (403)."""
+    token = make_token(rsa_keys, groups=[])
+    fake_payment_resp = MagicMock()
+    fake_payment_resp.status_code = 200
+    fake_payment_resp.json.return_value = {"order_id": 101, "payment_status": "approved"}
+    fake_payment_resp.raise_for_status = MagicMock()
+
+    with patch("auth.fetch_jwks_keys", return_value=mock_jwks):
+        create_resp = client.post("/runs", headers={"Authorization": f"Bearer {token}"})
+        assert create_resp.status_code == 201
+        run_id = create_resp.json()["run_id"]
+
+        fail_resp = client.post(
+            f"/runs/{run_id}/failure",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"target": "payment"},
+        )
+        assert fail_resp.status_code == 403
+
+        with patch("server_fastapi.requests.post", return_value=fake_payment_resp):
+            chk_resp = client.post(
+                "/orders/101/checkout",
+                headers={"Authorization": f"Bearer {token}", "X-Run-ID": run_id},
+            )
+            assert chk_resp.status_code == 200
+
+
 def test_failure_endpoint_permits_operator_group(rsa_keys, mock_jwks):
     """User in chronos-operators passes auth dependency on failure injection."""
     token = make_token(rsa_keys, groups=["chronos-operators"])

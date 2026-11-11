@@ -31,12 +31,14 @@ def _mock_controller_response(
     container_name: str = "01-http-basics-payment-1",
     project: str = "01-http-basics",
     detail: str | None = None,
+    timestamp: str | None = None,
+    container_state: str | None = None,
 ):
     """Create a mock HTTP response from the internal failure-controller."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
     if status_code == 200:
-        mock_resp.json.return_value = {
+        body = {
             "status": "injected",
             "target": "payment",
             "action": "kill",
@@ -44,6 +46,11 @@ def _mock_controller_response(
             "container_name": container_name,
             "compose_project": project,
         }
+        if timestamp is not None:
+            body["timestamp"] = timestamp
+        if container_state is not None:
+            body["container_state"] = container_state
+        mock_resp.json.return_value = body
     else:
         mock_resp.json.return_value = {"detail": detail or f"Controller error {status_code}"}
     return mock_resp
@@ -476,3 +483,208 @@ class TestCorrelatedFailureExperiment:
         assert event_types == ["REQUEST_START", "SERVICE_CALL", "RESPONSE", "REQUEST_END"]
         for e in events:
             assert e["run_id"] == run_id
+
+
+class TestFailureInjectionConcurrencyAndFailClosed:
+    """Tests for FAILED-run terminal guards, fail-closed pre-check, and concurrent safety."""
+
+    def test_injection_failed_run_409(self):
+        """Failed terminal runs must reject failure injection with 409 without calling controller."""
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+        update_run_status(run_id, status="FAILED")
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post") as mock_post:
+                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp.status_code == 409
+                assert "not in progress" in resp.json()["detail"].lower()
+                mock_post.assert_not_called()
+
+    def test_db_read_error_during_precheck_fails_closed(self):
+        """A DB read error checking injection eligibility must fail closed with 503 and never kill Payment."""
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch(
+                "failure_injector.verify_failure_injection_permitted",
+                side_effect=RuntimeError("Simulated Postgres read failure"),
+            ):
+                with patch("failure_injector.requests.post") as mock_post:
+                    resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                    assert resp.status_code == 503
+                    assert "unable to verify run eligibility" in resp.json()["detail"].lower()
+                    mock_post.assert_not_called()
+
+        assert get_events_by_run(run_id) == []
+
+    def test_db_connection_error_inside_verify_precheck_fails_closed(self):
+        """A real DB failure inside verify_failure_injection_permitted fails closed and never kills Payment."""
+        import database
+
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        original_get_db = database.get_db_connection
+        call_count = 0
+
+        def fail_on_verify_connection(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # First call is server_fastapi.get_run; second call is verify_failure_injection_permitted
+            if call_count >= 2:
+                raise RuntimeError("Connection lost during eligibility query")
+            return original_get_db(*args, **kwargs)
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("database.get_db_connection", side_effect=fail_on_verify_connection):
+                with patch("failure_injector.requests.post") as mock_post:
+                    resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                    assert resp.status_code == 503
+                    assert "unable to verify run eligibility" in resp.json()["detail"].lower()
+                    mock_post.assert_not_called()
+
+    def test_concurrent_failure_injection_attempts_only_kill_once(self):
+        """Concurrent failure injection requests for the same run must not both kill Payment."""
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        controller_entered = threading.Event()
+        allow_controller_return = threading.Event()
+        controller_calls = 0
+        count_lock = threading.Lock()
+
+        def slow_controller_kill(*args, **kwargs):
+            nonlocal controller_calls
+            with count_lock:
+                controller_calls += 1
+            controller_entered.set()
+            assert allow_controller_return.wait(timeout=5.0)
+            return _mock_controller_response(status_code=200, container_id="c_concurrent")
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post", side_effect=slow_controller_kill):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    future_first = pool.submit(
+                        client.post,
+                        f"/runs/{run_id}/failure",
+                        json={"target": "payment"},
+                    )
+                    assert controller_entered.wait(timeout=5.0), (
+                        "First failure injection did not reach controller"
+                    )
+
+                    # Competing concurrent request while first is awaiting controller HTTP
+                    resp_second = client.post(
+                        f"/runs/{run_id}/failure",
+                        json={"target": "payment"},
+                    )
+                    allow_controller_return.set()
+                    resp_first = future_first.result(timeout=5.0)
+
+        assert resp_first.status_code == 200
+        assert resp_second.status_code == 409
+        assert "already in progress" in resp_second.json()["detail"].lower()
+        assert controller_calls == 1
+
+        events = get_events_by_run(run_id)
+        assert len(events) == 1
+        assert events[0].event_type == "FAILURE_INJECTED"
+
+    def test_injection_rejected_when_checkout_already_started_409(self):
+        """If checkout already claimed REQUEST_START on an IN_PROGRESS run, reject injection with 409."""
+        from database import save_event
+        from event_schema import ChronosEvent
+
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+        save_event(
+            ChronosEvent(
+                run_id=run_id,
+                service_id="orders",
+                event_type="REQUEST_START",
+                source="orders-api",
+                payload={"order_id": 101},
+                severity="INFO",
+            )
+        )
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("failure_injector.requests.post") as mock_post:
+                resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+                assert resp.status_code == 409
+                assert "checkout already started" in resp.json()["detail"].lower()
+                mock_post.assert_not_called()
+
+    def test_concurrent_checkout_rejected_while_failure_injection_in_progress(self):
+        """Checkout on the same run must fail fast with 409 while failure injection is mid-flight."""
+        from concurrent.futures import ThreadPoolExecutor
+        import threading
+
+        run = client.post("/runs").json()
+        run_id = UUID(run["run_id"])
+
+        controller_entered = threading.Event()
+        allow_controller_return = threading.Event()
+        payment_calls: list[str] = []
+
+        def routed_requests_post(url, *args, **kwargs):
+            if "/internal/failures/payment/kill" in str(url):
+                controller_entered.set()
+                assert allow_controller_return.wait(timeout=5.0)
+                return _mock_controller_response(status_code=200, container_id="c_race")
+            payment_calls.append(str(url))
+            raise AssertionError(f"Unexpected downstream HTTP call to {url}")
+
+        with patch.dict("os.environ", DEFAULT_TEST_ENV):
+            with patch("requests.post", side_effect=routed_requests_post):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    future_inj = pool.submit(
+                        client.post,
+                        f"/runs/{run_id}/failure",
+                        json={"target": "payment"},
+                    )
+                    assert controller_entered.wait(timeout=5.0)
+
+                    checkout_resp = client.post(
+                        "/orders/101/checkout",
+                        headers={"X-Run-ID": str(run_id)},
+                    )
+                    allow_controller_return.set()
+                    inj_resp = future_inj.result(timeout=5.0)
+
+        assert inj_resp.status_code == 200
+        assert checkout_resp.status_code == 409
+        assert "failure injection" in checkout_resp.json()["detail"].lower()
+        assert payment_calls == []
+
+    def test_controller_timestamp_applied_to_failure_injected_event(self):
+        """Verify FAILURE_INJECTED event preserves controller kill timestamp in UTC."""
+        from datetime import datetime, timezone
+
+        run_resp = client.post("/runs")
+        run_id = run_resp.json()["run_id"]
+        controller_ts = "2026-11-11T10:15:30.123456Z"
+        mock_resp = _mock_controller_response(
+            status_code=200,
+            container_id="c_ts_1",
+            timestamp=controller_ts,
+            container_state="exited",
+        )
+
+        with (
+            patch.dict("os.environ", DEFAULT_TEST_ENV),
+            patch("failure_injector.requests.post", return_value=mock_resp),
+        ):
+            resp = client.post(f"/runs/{run_id}/failure", json={"target": "payment"})
+            assert resp.status_code == 200
+
+        events = get_events_by_run(UUID(run_id))
+        assert len(events) == 1
+        assert events[0].event_type == "FAILURE_INJECTED"
+        assert events[0].timestamp == datetime(2026, 11, 11, 10, 15, 30, 123456, tzinfo=timezone.utc)
+        assert events[0].payload.get("container_state") == "exited"
