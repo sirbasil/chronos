@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { ChronosRun } from '../../types/events';
 import { AppMode } from '../../types/api';
+import { computeRunDurationMs, parseUtcTimestampMs } from '../../utils/runTelemetry';
 import {
   Layers,
   Activity,
@@ -17,10 +18,11 @@ import {
 
 interface RunsViewProps {
   runs: ChronosRun[];
-  currentRun: ChronosRun;
+  currentRun: ChronosRun | null;
   mode: AppMode;
   isLoading: boolean;
   isCreatingRun?: boolean;
+  isActionInProgress?: boolean;
   creationError?: string | null;
   onRefresh: () => void;
   onSelectRun: (run: ChronosRun) => void;
@@ -35,6 +37,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
   mode,
   isLoading,
   isCreatingRun = false,
+  isActionInProgress = false,
   creationError = null,
   onRefresh,
   onSelectRun,
@@ -43,7 +46,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
   onDismissError,
 }) => {
   const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED' | 'IN_PROGRESS' | 'ABANDONED'>('ALL');
+  const [filter, setFilter] = useState<'ALL' | 'COMPLETED' | 'FAILED' | 'IN_PROGRESS'>('ALL');
 
   const copyRunId = async (id: string) => {
     try {
@@ -84,16 +87,12 @@ export const RunsView: React.FC<RunsViewProps> = ({
             IN_PROGRESS
           </span>
         );
-      case 'ABANDONED':
-        return (
-          <span className="px-2 py-0.5 bg-[#121412] border border-chrono-muted/60 text-chrono-muted font-mono text-[10px] font-bold flex items-center gap-1.5 w-fit">
-            <span className="w-1.5 h-1.5 rounded-full bg-chrono-muted" />
-            ABANDONED
-          </span>
-        );
       default:
         return (
-          <span className="px-2 py-0.5 bg-[#080d07] border border-chrono-grid text-chrono-muted font-mono text-[10px] font-bold">
+          <span
+            className="px-2 py-0.5 bg-[#080d07] border border-chrono-grid text-chrono-muted font-mono text-[10px] font-bold"
+            title="Legacy or non-standard lifecycle status"
+          >
             {status}
           </span>
         );
@@ -103,8 +102,8 @@ export const RunsView: React.FC<RunsViewProps> = ({
   return (
     <div className="flex-1 flex flex-col h-full bg-[#030602] text-chrono-text relative overflow-hidden select-none">
       {/* 1. Header Toolbar */}
-      <div className="h-10 bg-[#070b05] border-b border-chrono-grid flex items-center justify-between px-4 z-10 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="min-h-10 bg-[#070b05] border-b border-chrono-grid flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 z-10 shrink-0">
+        <div className="flex flex-wrap items-center gap-3">
           <Layers className="w-4 h-4 text-chrono-phosphor drop-shadow-[0_0_6px_#b8ff00]" />
           <div className="font-ui font-bold text-xs tracking-wider text-chrono-phosphor flex items-center gap-2">
             EXPERIMENT RUN CATALOG <span className="text-[10px] text-chrono-muted font-mono">// POSTGRESQL RECORD STORE</span>
@@ -120,13 +119,13 @@ export const RunsView: React.FC<RunsViewProps> = ({
           )}
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           {/* Status Filter Buttons */}
           <div className="flex items-center bg-[#020402] border border-chrono-grid p-0.5 font-mono text-[10px]">
             <span className="px-2 text-chrono-muted flex items-center gap-1">
               <Filter className="w-3 h-3" /> FILTER:
             </span>
-            {(['ALL', 'COMPLETED', 'FAILED', 'IN_PROGRESS', 'ABANDONED'] as const).map((s) => (
+            {(['ALL', 'COMPLETED', 'FAILED', 'IN_PROGRESS'] as const).map((s) => (
               <button
                 key={s}
                 onClick={() => setFilter(s)}
@@ -145,13 +144,15 @@ export const RunsView: React.FC<RunsViewProps> = ({
           {onCreateRun && (
             <button
               onClick={onCreateRun}
-              disabled={isLoading || isCreatingRun || mode === 'PREVIEW'}
+              disabled={isLoading || isCreatingRun || isActionInProgress || mode === 'PREVIEW'}
               className={`flex items-center gap-1.5 px-3 py-1 bg-[#12220f] border border-[#22c55e] text-[#4ade80] font-mono text-[10px] font-bold tracking-wider hover:bg-[#1b3516] hover:shadow-[0_0_8px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
                 isCreatingRun ? 'animate-pulse' : ''
               }`}
               title={
                 mode === 'PREVIEW'
                   ? 'Run creation is only available in LIVE mode'
+                  : isActionInProgress
+                  ? 'Wait for active checkout or failure injection to finish'
                   : 'Initialize and start a new run on backend (POST /runs)'
               }
             >
@@ -171,7 +172,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
 
           <button
             onClick={onRefresh}
-            disabled={isLoading || isCreatingRun}
+            disabled={isLoading || isCreatingRun || isActionInProgress}
             className={`p-1.5 bg-[#0c1209] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
               isLoading ? 'animate-spin text-chrono-phosphor' : ''
             }`}
@@ -202,10 +203,10 @@ export const RunsView: React.FC<RunsViewProps> = ({
       )}
 
       {/* 2. Run Catalog Table */}
-      <div className="flex-1 overflow-y-auto p-4 bg-[#040604]">
+      <div className="flex-1 overflow-auto p-4 bg-[#040604]">
         {filteredRuns.length > 0 ? (
-          <div className="border border-chrono-grid bg-[#070b05] shadow-lg">
-            <table className="w-full text-left font-mono text-xs">
+          <div className="border border-chrono-grid bg-[#070b05] shadow-lg overflow-x-auto">
+            <table className="w-full text-left font-mono text-xs min-w-[680px]">
               <thead>
                 <tr className="bg-[#020402] border-b border-chrono-grid text-[10px] text-chrono-muted uppercase tracking-wider">
                   <th className="py-2.5 px-3">Status</th>
@@ -218,12 +219,10 @@ export const RunsView: React.FC<RunsViewProps> = ({
               </thead>
               <tbody className="divide-y divide-chrono-grid/40">
                 {filteredRuns.map((r) => {
-                  const isCurrent = currentRun.run_id === r.run_id;
-                  const durationMs = r.completed_at
-                    ? new Date(r.completed_at).getTime() - new Date(r.started_at).getTime()
-                    : r.events.length > 1
-                    ? (r.events[r.events.length - 1].offset_ms ?? 0)
-                    : 0;
+                  const isCurrent = currentRun?.run_id === r.run_id;
+                  const effectiveRun = isCurrent && currentRun ? currentRun : r;
+                  const durationMs = computeRunDurationMs(effectiveRun.events, effectiveRun);
+                  const startedAtMs = parseUtcTimestampMs(r.started_at);
 
                   return (
                     <tr
@@ -263,7 +262,9 @@ export const RunsView: React.FC<RunsViewProps> = ({
                         )}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap text-chrono-muted text-[11px]">
-                        {new Date(r.started_at).toLocaleString()}
+                        {Number.isFinite(startedAtMs)
+                          ? new Date(startedAtMs).toLocaleString()
+                          : r.started_at}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap font-digital text-chrono-amber text-sm font-bold">
                         {durationMs > 0 ? `${durationMs}ms` : '—'}
@@ -278,11 +279,17 @@ export const RunsView: React.FC<RunsViewProps> = ({
                           </button>
                         ) : (
                           <button
+                            disabled={isActionInProgress || isCreatingRun}
                             onClick={() => {
                               onSelectRun(r);
                               onSwitchToMonitor();
                             }}
-                            className="px-2.5 py-1 text-[10px] font-bold bg-[#0c1209] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-colors flex items-center gap-1 ml-auto"
+                            title={
+                              isActionInProgress
+                                ? 'Wait for active checkout or failure injection to finish before switching runs'
+                                : 'Load this run in Monitor view'
+                            }
+                            className="px-2.5 py-1 text-[10px] font-bold bg-[#0c1209] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-colors flex items-center gap-1 ml-auto disabled:opacity-40 disabled:cursor-not-allowed"
                           >
                             LOAD <ArrowRight className="w-3 h-3" />
                           </button>
@@ -308,7 +315,7 @@ export const RunsView: React.FC<RunsViewProps> = ({
             {mode === 'LIVE' && onCreateRun && (
               <button
                 onClick={onCreateRun}
-                disabled={isLoading || isCreatingRun}
+                disabled={isLoading || isCreatingRun || isActionInProgress}
                 className="flex items-center gap-2 px-4 py-2 bg-[#12220f] border border-[#22c55e] text-[#4ade80] font-mono text-xs font-bold tracking-wider hover:bg-[#1b3516] hover:shadow-[0_0_8px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {isCreatingRun ? (

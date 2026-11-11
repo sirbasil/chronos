@@ -8,6 +8,7 @@ export interface BackendHealth {
   status: 'ok' | 'degraded';
   timestamp: string;
   database: 'connected' | 'disconnected';
+  payment?: 'healthy' | 'unreachable';
 }
 
 export interface RunSummaryResponse {
@@ -55,4 +56,21 @@ export interface ApiError {
   status: number;
   code: string;
   message: string;
+}
+
+export interface ExecutionResultInfo {
+  runId: string;
+  kind?: 'checkout' | 'failure_injection';
+  status: number;
+  message: string;
+  details?: string;
+}
+
+export interface ExecutionErrorInfo {
+  runId: string;
+  status?: number;
+  code: string;
+  message: string;
+  isExpectedFailurePropagation?: boolean;
+  details?: string;
 }

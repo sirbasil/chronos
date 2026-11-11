@@ -1,6 +1,6 @@
 import React from 'react';
 import { ServiceSummary } from '../../types/events';
-import { AppMode } from '../../types/api';
+import { AppMode, BackendHealth } from '../../types/api';
 import { Server, ArrowDownLeft, ArrowUpRight, AlertOctagon } from 'lucide-react';
 
 interface ServiceMatrixProps {
@@ -8,6 +8,7 @@ interface ServiceMatrixProps {
   selectedServiceId: string | null;
   onSelectService: (service: ServiceSummary) => void;
   mode?: AppMode;
+  backendHealth?: BackendHealth | null;
 }
 
 export const ServiceMatrix: React.FC<ServiceMatrixProps> = ({
@@ -15,7 +16,43 @@ export const ServiceMatrix: React.FC<ServiceMatrixProps> = ({
   selectedServiceId,
   onSelectService,
   mode = 'LIVE',
+  backendHealth = null,
 }) => {
+  const getServiceVisual = (status: ServiceSummary['status']) => {
+    switch (status) {
+      case 'HEALTHY':
+        return {
+          lamp: 'bg-chrono-success shadow-[0_0_8px_#00ff88]',
+          text: 'text-chrono-success',
+          barAlert: false,
+        };
+      case 'RECOVERED':
+        return {
+          lamp: 'bg-[#22d3ee] shadow-[0_0_8px_#22d3ee]',
+          text: 'text-[#22d3ee]',
+          barAlert: false,
+        };
+      case 'FAILED':
+        return {
+          lamp: 'bg-chrono-red shadow-[0_0_8px_#ff3333] animate-pulse',
+          text: 'text-chrono-red',
+          barAlert: true,
+        };
+      case 'DEGRADED':
+        return {
+          lamp: 'bg-chrono-amber shadow-[0_0_8px_#ff9e00] animate-pulse',
+          text: 'text-chrono-amber',
+          barAlert: true,
+        };
+      case 'OBSERVED':
+      default:
+        return {
+          lamp: 'bg-chrono-muted shadow-[0_0_4px_#6b7280]',
+          text: 'text-chrono-muted',
+          barAlert: false,
+        };
+    }
+  };
   return (
     <div className="instrument-cluster-frame flex flex-col h-full overflow-hidden select-none">
       {/* 1. Matrix Header Bezel */}
@@ -41,16 +78,19 @@ export const ServiceMatrix: React.FC<ServiceMatrixProps> = ({
       </div>
 
       {/* 2. Integrated Instrumentation Rack Bays */}
-      <div className="p-3 flex-1 overflow-y-auto space-y-3 bg-[#040604]">
+      <div className="p-2.5 flex-1 overflow-y-auto space-y-2.5 bg-[#040604]">
         {services.map((svc, idx) => {
           const isSelected = selectedServiceId === svc.id;
-          const isDegraded = svc.status !== 'HEALTHY' || svc.error_count > 0;
+          const visual = getServiceVisual(svc.status);
+          const isAlert = visual.barAlert || svc.error_count > 0;
+          const showLivePaymentProbe =
+            mode === 'LIVE' && svc.id === 'payment' && Boolean(backendHealth?.payment);
 
           return (
             <div
               key={svc.id}
               onClick={() => onSelectService(svc)}
-              className={`matrix-rack-bay p-3.5 border relative cursor-pointer ${
+              className={`matrix-rack-bay p-3 border relative cursor-pointer ${
                 isSelected ? 'selected' : ''
               }`}
             >
@@ -60,43 +100,53 @@ export const ServiceMatrix: React.FC<ServiceMatrixProps> = ({
               )}
 
               {/* Bay Row 1: Channel Tag, Service Name & Status Lamp */}
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center gap-2 min-w-0">
                   <Server
-                    className={`w-4 h-4 ${
+                    className={`w-4 h-4 shrink-0 ${
                       isSelected ? 'text-chrono-phosphor' : 'text-chrono-muted'
                     }`}
                   />
-                  <div>
-                    <div className="font-mono font-bold text-xs text-chrono-text tracking-wider uppercase flex items-center gap-1.5">
+                  <div className="min-w-0">
+                    <div className="font-mono font-bold text-xs text-chrono-text tracking-wider uppercase flex items-center gap-1.5 truncate">
                       <span className="text-chrono-muted text-[10px]">CH-0{idx + 1}:</span>
-                      <span>{svc.name}</span>
+                      <span className="truncate">{svc.name}</span>
                     </div>
                   </div>
                 </div>
 
                 {/* Status Indicator Jewel Lamp */}
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-2.5 h-2.5 rounded-full ${
-                      isDegraded
-                        ? 'bg-chrono-amber shadow-[0_0_8px_#ff9e00] animate-pulse'
-                        : 'bg-chrono-success shadow-[0_0_8px_#00ff88]'
-                    }`}
-                  />
-                  <span
-                    className={`font-mono text-[10px] font-bold tracking-wider ${
-                      isDegraded ? 'text-chrono-amber' : 'text-chrono-success'
-                    }`}
-                  >
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className={`w-2.5 h-2.5 rounded-full ${visual.lamp}`} />
+                  <span className={`font-mono text-[10px] font-bold tracking-wider ${visual.text}`}>
                     {svc.status}
                   </span>
                 </div>
               </div>
 
+              {/* Live Payment Probe vs Historical Status Clarification */}
+              {showLivePaymentProbe && (
+                <div className="mb-1.5 px-2 py-0.5 bg-[#020402] border border-chrono-grid/60 flex items-center justify-between font-mono text-[9px]">
+                  <span className="text-chrono-muted">LIVE /health PROBE:</span>
+                  <span
+                    className={
+                      backendHealth?.payment === 'healthy'
+                        ? 'text-chrono-success font-bold'
+                        : 'text-chrono-red font-bold'
+                    }
+                  >
+                    {backendHealth?.payment === 'healthy'
+                      ? svc.status === 'FAILED'
+                        ? 'RECOVERED (HTTP OK)'
+                        : 'REACHABLE (HTTP OK)'
+                      : 'UNREACHABLE'}
+                  </span>
+                </div>
+              )}
+
               {/* Bay Row 2: Port, Container & 5-Segment Activity Gauge */}
-              <div className="flex items-center justify-between font-mono text-[10px] text-chrono-muted mb-2.5 bg-[#020402] px-2 py-1 border border-chrono-grid">
-                <div>
+              <div className="flex items-center justify-between gap-2 font-mono text-[10px] text-chrono-muted mb-2 bg-[#020402] px-2 py-1 border border-chrono-grid">
+                <div className="shrink-0 whitespace-nowrap">
                   PORT: <strong className="text-chrono-phosphor font-bold">{svc.port}</strong>
                 </div>
                 <div className="truncate max-w-[130px] text-chrono-text">
@@ -108,7 +158,7 @@ export const ServiceMatrix: React.FC<ServiceMatrixProps> = ({
                   <div className="w-1.5 h-3 bg-chrono-phosphor shadow-[0_0_4px_#b8ff00]" />
                   <div className="w-1.5 h-3 bg-chrono-phosphor shadow-[0_0_4px_#b8ff00]" />
                   <div className={`w-1.5 h-3 ${svc.inbound_calls > 1 ? 'bg-chrono-phosphor shadow-[0_0_4px_#b8ff00]' : 'bg-[#182607]'}`} />
-                  <div className={`w-1.5 h-3 ${isDegraded ? 'bg-chrono-danger shadow-[0_0_4px_#ff2e17]' : 'bg-[#182607]'}`} />
+                  <div className={`w-1.5 h-3 ${isAlert ? 'bg-chrono-danger shadow-[0_0_4px_#ff2e17]' : 'bg-[#182607]'}`} />
                   <div className="w-1.5 h-3 bg-[#182607]" />
                 </div>
               </div>

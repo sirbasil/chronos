@@ -6,7 +6,7 @@ export const DEMO_RUN_SUCCESS: ChronosRun = {
   completed_at: '2026-11-06T12:00:00.048Z',
   status: 'COMPLETED',
   order_id: 'ord-883921',
-  description: 'Standard checkout execution (Happy Path)',
+  description: '[SIMULATED] Standard checkout execution (Happy Path)',
   is_failure_experiment: false,
   events: [
     {
@@ -88,7 +88,7 @@ export const DEMO_RUN_FAILURE_EXPERIMENT: ChronosRun = {
   completed_at: '2026-11-06T12:05:00.124Z',
   status: 'FAILED',
   order_id: 'ord-883922',
-  description: 'Controlled Payment Container Failure Experiment',
+  description: '[SIMULATED] Controlled Payment Container Failure Experiment',
   is_failure_experiment: true,
   events: [
     {
@@ -186,7 +186,7 @@ export const DEMO_SERVICES_FAILURE: ServiceSummary[] = [
   {
     id: 'orders',
     name: 'Orders Service',
-    status: 'HEALTHY',
+    status: 'DEGRADED',
     container_name: '01-http-basics-orders-1',
     compose_service: 'orders',
     port: 8000,
@@ -198,7 +198,7 @@ export const DEMO_SERVICES_FAILURE: ServiceSummary[] = [
   {
     id: 'payment',
     name: 'Payment Service',
-    status: 'OBSERVED',
+    status: 'FAILED',
     container_name: '01-http-basics-payment-1',
     compose_service: 'payment',
     port: 8001,
@@ -210,11 +210,11 @@ export const DEMO_SERVICES_FAILURE: ServiceSummary[] = [
   {
     id: 'postgres',
     name: 'PostgreSQL Store',
-    status: 'HEALTHY',
+    status: 'OBSERVED',
     container_name: '01-http-basics-postgres-1',
     compose_service: 'postgres',
     port: 5432,
-    inbound_calls: 5,
+    inbound_calls: DEMO_RUN_FAILURE_EXPERIMENT.events.length,
     outbound_calls: 0,
     error_count: 0,
     last_event_type: null,
@@ -249,11 +249,11 @@ export const DEMO_SERVICES_SUCCESS: ServiceSummary[] = [
   {
     id: 'postgres',
     name: 'PostgreSQL Store',
-    status: 'HEALTHY',
+    status: 'OBSERVED',
     container_name: '01-http-basics-postgres-1',
     compose_service: 'postgres',
     port: 5432,
-    inbound_calls: 2,
+    inbound_calls: DEMO_RUN_SUCCESS.events.length,
     outbound_calls: 0,
     error_count: 0,
     last_event_type: null,

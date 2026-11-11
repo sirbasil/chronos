@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { InspectorTarget } from '../types/ui';
 import { ChronosEvent } from '../types/events';
 import { BackendHealth, BackendConnectionState, AppMode } from '../types/api';
+import { formatSignedOffsetMs, formatExactSignedDelta } from '../utils/runTelemetry';
 import { X, Copy, Check, Info, Server, Box, Layers } from 'lucide-react';
 
 interface InspectorProps {
@@ -45,7 +46,7 @@ export const Inspector: React.FC<InspectorProps> = ({
   };
 
   return (
-    <aside className="w-[380px] bg-[#070b05] border-l border-chrono-grid flex flex-col h-full shrink-0 select-none overflow-hidden z-20 shadow-2xl">
+    <aside className="w-full sm:w-[340px] lg:w-[380px] bg-[#070b05] border-l border-chrono-grid flex flex-col h-full shrink-0 select-none overflow-hidden z-20 shadow-2xl">
       {/* Inspector Top Bezel */}
       <div className="h-[40px] bg-[#0c1209] border-b border-chrono-grid flex items-center justify-between px-3 shrink-0">
         <div className="flex items-center gap-2.5">
@@ -100,10 +101,13 @@ export const Inspector: React.FC<InspectorProps> = ({
               </div>
 
               {target.event.offset_ms !== undefined && (
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <span className="text-[10px] text-chrono-muted tracking-wider">OFFSET</span>
-                  <span className="text-chrono-amber font-digital text-base font-bold drop-shadow-[0_0_6px_rgba(255,158,0,0.6)]">
-                    +{target.event.offset_ms}ms
+                  <span
+                    className="text-chrono-amber font-digital text-base font-bold drop-shadow-[0_0_6px_rgba(255,158,0,0.6)]"
+                    title={formatExactSignedDelta(target.event.offset_ms)}
+                  >
+                    {formatSignedOffsetMs(target.event.offset_ms)}
                   </span>
                 </div>
               )}
@@ -187,7 +191,13 @@ export const Inspector: React.FC<InspectorProps> = ({
                   className={`font-bold px-2 py-0.5 text-[10px] border ${
                     target.service.status === 'HEALTHY'
                       ? 'text-chrono-success bg-[#021f10] border-chrono-success shadow-[0_0_6px_rgba(0,255,136,0.5)]'
-                      : 'text-chrono-amber bg-[#201505] border-chrono-amber shadow-[0_0_6px_rgba(255,158,0,0.5)]'
+                      : target.service.status === 'RECOVERED'
+                      ? 'text-[#22d3ee] bg-[#041920] border-[#22d3ee] shadow-[0_0_6px_rgba(34,211,238,0.4)]'
+                      : target.service.status === 'FAILED'
+                      ? 'text-chrono-red bg-[#240808] border-chrono-red shadow-[0_0_6px_rgba(255,51,51,0.5)]'
+                      : target.service.status === 'DEGRADED'
+                      ? 'text-chrono-amber bg-[#201505] border-chrono-amber shadow-[0_0_6px_rgba(255,158,0,0.5)]'
+                      : 'text-chrono-muted bg-[#080d07] border-chrono-grid'
                   }`}
                 >
                   {target.service.status}
@@ -272,14 +282,48 @@ export const Inspector: React.FC<InspectorProps> = ({
               </div>
               <div className="flex justify-between">
                 <span className="text-[10px] text-chrono-muted">DATABASE STORE</span>
-                <span className="font-mono text-[#4ade80] font-bold">
-                  {backendHealth?.database === 'connected' ? 'PostgreSQL 16 (Connected)' : 'PostgreSQL 16 (:5432)'}
+                <span
+                  className={`font-mono font-bold ${
+                    backendHealth?.database === 'connected'
+                      ? 'text-[#4ade80]'
+                      : backendHealth?.database === 'disconnected'
+                      ? 'text-chrono-red'
+                      : 'text-chrono-muted'
+                  }`}
+                >
+                  {mode === 'PREVIEW'
+                    ? 'PREVIEW (NO DB PROBE)'
+                    : backendHealth?.database === 'connected'
+                    ? 'PostgreSQL 16 (Connected)'
+                    : backendHealth?.database === 'disconnected'
+                    ? 'PostgreSQL 16 (Disconnected)'
+                    : 'Not Probed Yet'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[10px] text-chrono-muted">PAYMENT /health PROBE</span>
+                <span
+                  className={`font-mono font-bold ${
+                    backendHealth?.payment === 'healthy'
+                      ? 'text-[#4ade80]'
+                      : backendHealth?.payment === 'unreachable'
+                      ? 'text-chrono-red'
+                      : 'text-chrono-muted'
+                  }`}
+                >
+                  {mode === 'PREVIEW'
+                    ? 'PREVIEW (NOT PROBED)'
+                    : backendHealth?.payment === 'healthy'
+                    ? 'Reachable (HTTP 200)'
+                    : backendHealth?.payment === 'unreachable'
+                    ? 'Unreachable'
+                    : 'Unknown'}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-[10px] text-chrono-muted">LAST CONTACT</span>
                 <span className="text-chrono-text font-mono">
-                  {lastContactTime ? lastContactTime.toLocaleTimeString() : 'N/A'}
+                  {lastContactTime ? lastContactTime.toLocaleTimeString() : 'NOT PROBED'}
                 </span>
               </div>
             </div>
@@ -299,20 +343,44 @@ export const Inspector: React.FC<InspectorProps> = ({
             </div>
           </div>
         ) : target.type === 'DOCKER_STATUS' ? (
-          /* Docker Status Inspection */
+          /* Docker Compose Architecture & Policy Inspection */
           <div className="space-y-3.5">
             <div className="flex items-center gap-2 text-chrono-amber font-bold">
               <Box className="w-4 h-4" />
-              <span>DOCKER COMPOSE TOPOLOGY (PREVIEW)</span>
+              <span>
+                DOCKER COMPOSE TOPOLOGY ({mode === 'PREVIEW' ? 'PREVIEW' : connectionState === 'CONNECTED' ? 'COMPOSE' : 'OFFLINE'})
+              </span>
             </div>
 
-            <div className="p-2.5 bg-[#201505] border border-chrono-amber text-chrono-amber text-[10px] space-y-1 shadow-sm">
+            <div
+              className={`p-2.5 border text-[10px] space-y-1 shadow-sm ${
+                mode === 'PREVIEW'
+                  ? 'bg-[#201505] border-chrono-amber text-chrono-amber'
+                  : connectionState === 'CONNECTED'
+                  ? 'bg-[#081207] border-chrono-phosphor/70 text-chrono-phosphor'
+                  : 'bg-[#1f0909] border-chrono-red text-chrono-red'
+              }`}
+            >
               <div className="font-bold flex items-center gap-2">
-                <span className="w-1.5 h-1.5 rounded-full bg-chrono-amber shadow-[0_0_6px_#ff9e00] animate-pulse" />
-                PREVIEW MODE // NO LIVE DOCKER CALLS
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    mode === 'PREVIEW'
+                      ? 'bg-chrono-amber shadow-[0_0_6px_#ff9e00]'
+                      : connectionState === 'CONNECTED'
+                      ? 'bg-chrono-phosphor shadow-[0_0_6px_#b8ff00]'
+                      : 'bg-chrono-red shadow-[0_0_6px_#ff3333]'
+                  }`}
+                />
+                {mode === 'PREVIEW'
+                  ? 'PREVIEW MODE // NO LIVE BACKEND CALLS'
+                  : connectionState === 'CONNECTED'
+                  ? 'FASTAPI REACHABLE // NO DIRECT CONTAINER PROBE'
+                  : 'BACKEND UNREACHABLE // COMPOSE STATUS UNKNOWN'}
               </div>
               <p className="text-chrono-text leading-tight">
-                M1 enforces strict safety boundaries: no Docker socket queries, container kills, or command executions occur from this desktop shell.
+                {mode === 'PREVIEW'
+                  ? 'Synthetic preview fixtures are active. No HTTP requests are sent to FastAPI or failure-controller.'
+                  : 'This UI checks FastAPI /health only; it does not probe Docker container liveness directly. Local docker-compose.yml stops payment on kill until manually restarted.'}
               </p>
             </div>
 
@@ -322,33 +390,39 @@ export const Inspector: React.FC<InspectorProps> = ({
                 <span className="font-mono text-chrono-text font-bold">01-http-basics</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[10px] text-chrono-muted">SOCKET POLICY</span>
-                <span className="text-chrono-text font-bold">/var/run/docker.sock (orders only)</span>
+                <span className="text-[10px] text-chrono-muted">SOCKET ISOLATION</span>
+                <span className="text-chrono-text font-mono font-bold">failure-controller only</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-[10px] text-chrono-muted">TARGET ALLOWLIST</span>
                 <span className="text-chrono-amber font-mono font-bold">payment (ONLY)</span>
               </div>
-              <div className="flex justify-between">
-                <span className="text-[10px] text-chrono-muted">M1 PERMISSION</span>
-                <span className="text-chrono-danger font-mono font-bold">DISABLED (PREVIEW ONLY)</span>
+              <div className="flex justify-between gap-2">
+                <span className="text-[10px] text-chrono-muted shrink-0">PAYMENT RESTART</span>
+                <span className="text-chrono-text font-mono text-right">
+                  Manual (restart: &quot;no&quot;)
+                </span>
               </div>
             </div>
 
             <div className="border border-chrono-grid bg-[#020402] p-3 space-y-1.5 text-[11px]">
-              <span className="text-[10px] text-chrono-muted font-bold tracking-wider">COMPOSE SERVICE DEFINITIONS</span>
+              <span className="text-[10px] text-chrono-muted font-bold tracking-wider">COMPOSE SERVICES</span>
               <div className="space-y-1 text-chrono-text">
                 <div className="flex justify-between">
-                  <span>01-http-basics-orders-1</span>
-                  <span className="text-chrono-muted">orders (:8000) [TARGET SPEC]</span>
+                  <span>orders</span>
+                  <span className="text-chrono-muted">:8000 [API & Orchestrator]</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>01-http-basics-payment-1</span>
-                  <span className="text-chrono-muted">payment (:8001) [TARGET SPEC]</span>
+                  <span>payment</span>
+                  <span className="text-chrono-muted">:8001 [Fault Target]</span>
                 </div>
                 <div className="flex justify-between">
-                  <span>01-http-basics-postgres-1</span>
-                  <span className="text-chrono-muted">postgres (:5432) [TARGET SPEC]</span>
+                  <span>postgres</span>
+                  <span className="text-chrono-muted">:5432 [PostgreSQL 16]</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>failure-controller</span>
+                  <span className="text-chrono-muted">:8002 [Docker Proxy]</span>
                 </div>
               </div>
             </div>
@@ -358,9 +432,17 @@ export const Inspector: React.FC<InspectorProps> = ({
           <div className="space-y-3.5">
             <div className="flex items-center gap-2 text-chrono-phosphor font-bold">
               <Layers className="w-4 h-4" />
-              <span>PREVIEW RUN FIXTURE // METADATA</span>
+              <span>
+                {mode === 'LIVE' ? 'LIVE RUN // TELEMETRY METADATA' : 'PREVIEW RUN FIXTURE // METADATA'}
+              </span>
             </div>
             <div className="border border-chrono-grid bg-[#020402] p-3 space-y-2">
+              <div className="flex justify-between gap-2">
+                <span className="text-[10px] text-chrono-muted">RUN ID</span>
+                <span className="text-chrono-text text-[10px] font-mono break-all text-right">
+                  {target.run.run_id}
+                </span>
+              </div>
               <div className="flex justify-between">
                 <span className="text-[10px] text-chrono-muted">STATUS</span>
                 <span className="font-bold text-chrono-phosphor">{target.run.status}</span>
@@ -380,12 +462,15 @@ export const Inspector: React.FC<InspectorProps> = ({
                 <span className="text-chrono-text">{target.run.completed_at ?? 'IN PROGRESS'}</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[10px] text-chrono-muted">FIXTURE EVENTS</span>
+                <span className="text-[10px] text-chrono-muted">
+                  {mode === 'LIVE' ? 'PERSISTED EVENTS' : 'SIMULATED EVENTS'}
+                </span>
                 <span className="font-bold text-chrono-phosphor">{target.run.events.length}</span>
               </div>
             </div>
             <div className="p-3 bg-[#070b05] border border-chrono-grid text-chrono-text text-[11px] leading-relaxed">
-              [FIXTURE DATA] {target.run.description}
+              {mode === 'LIVE' ? '[LIVE POSTGRESQL] ' : '[SIMULATED FIXTURE] '}
+              {target.run.description}
             </div>
           </div>
         ) : null}

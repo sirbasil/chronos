@@ -37,6 +37,13 @@ const ServiceNodeComponent: React.FC<NodeProps<Node<TopologyNodeData>>> = ({ dat
           bg: 'bg-[#051a08]',
           lamp: 'bg-[#22c55e] shadow-[0_0_8px_#22c55e]',
         };
+      case 'RECOVERED':
+        return {
+          border: 'border-[#22d3ee]',
+          text: 'text-[#22d3ee]',
+          bg: 'bg-[#041920]',
+          lamp: 'bg-[#22d3ee] shadow-[0_0_8px_#22d3ee]',
+        };
       case 'DEGRADED':
         return {
           border: 'border-chrono-amber',
@@ -138,7 +145,7 @@ const nodeTypes = {
 };
 
 interface TopologyViewProps {
-  run: ChronosRun;
+  run: ChronosRun | null;
   services: ServiceSummary[];
   topologyData?: TopologyResponse | null;
   mode: AppMode;
@@ -236,7 +243,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({
     }
 
     // Default: if run has SERVICE_CALL events, synthesize edges
-    const serviceCalls = run.events.filter((e) => e.event_type === 'SERVICE_CALL');
+    const serviceCalls = (run?.events ?? []).filter((e) => e.event_type === 'SERVICE_CALL');
     const uniquePairs = new Map<string, { source: string; dest: string }>();
 
     for (const call of serviceCalls) {
@@ -279,7 +286,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({
         rx: 2,
       },
     }));
-  }, [topologyData, run.events]);
+  }, [topologyData, run?.events]);
 
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<Node<TopologyNodeData>>(nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState<Edge>(edges);
@@ -294,7 +301,7 @@ export const TopologyView: React.FC<TopologyViewProps> = ({
 
   const handleEdgeClick = useCallback(
     (_event: React.MouseEvent, edge: Edge) => {
-      if (onSelectEvent) {
+      if (onSelectEvent && run) {
         const matchingEvent = run.events.find(
           (e) =>
             e.event_type === 'SERVICE_CALL' &&
@@ -306,22 +313,22 @@ export const TopologyView: React.FC<TopologyViewProps> = ({
         }
       }
     },
-    [onSelectEvent, run.events]
+    [onSelectEvent, run]
   );
 
-  const hasData = nodes.length > 0;
+  const hasData = nodes.length > 0 && Boolean(run && (run.events.length > 0 || (topologyData?.nodes?.length ?? 0) > 0));
 
   return (
     <div className="flex-1 flex flex-col h-full bg-[#030602] text-chrono-text relative overflow-hidden select-none">
       {/* 1. Header Toolbar */}
-      <div className="h-10 bg-[#070b05] border-b border-chrono-grid flex items-center justify-between px-4 z-10 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="min-h-10 bg-[#070b05] border-b border-chrono-grid flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 z-10 shrink-0">
+        <div className="flex flex-wrap items-center gap-3">
           <Network className="w-4 h-4 text-chrono-phosphor drop-shadow-[0_0_6px_#b8ff00]" />
           <div className="font-ui font-bold text-xs tracking-wider text-chrono-phosphor flex items-center gap-2">
             SERVICE TOPOLOGY <span className="text-[10px] text-chrono-muted font-mono">// OBSERVED RUN DAG</span>
           </div>
           <span className="text-[10px] font-mono px-2 py-0.5 bg-[#0b1009] border border-chrono-grid text-chrono-text">
-            RUN: <span className="text-chrono-phosphor font-bold">{run.run_id.slice(0, 8)}</span>
+            RUN: <span className="text-chrono-phosphor font-bold">{run ? run.run_id.slice(0, 8) : 'NONE'}</span>
           </span>
           {mode === 'LIVE' ? (
             <span className="text-[9px] font-mono px-2 py-0.5 bg-[#051a08] border border-[#22c55e] text-[#4ade80] flex items-center gap-1 font-bold">
@@ -375,17 +382,23 @@ export const TopologyView: React.FC<TopologyViewProps> = ({
                 NO TOPOLOGY RECORDED
               </div>
               <p className="font-mono text-xs text-chrono-muted leading-relaxed mb-4">
-                No inter-service RPC telemetry or events were recorded for Run{' '}
-                <span className="text-chrono-text font-bold">{run.run_id}</span>.
+                {run ? (
+                  <>
+                    No inter-service RPC telemetry or events were recorded for Run{' '}
+                    <span className="text-chrono-text font-bold">{run.run_id}</span>.
+                  </>
+                ) : (
+                  'No active run selected. Initialize a new run to observe live service topology.'
+                )}
               </p>
               <div className="p-3 bg-[#030502] border border-chrono-grid/60 text-left font-mono text-[11px] text-chrono-muted space-y-1 mb-4">
                 <div className="flex items-center gap-2 text-chrono-text">
                   <Activity className="w-3.5 h-3.5 text-chrono-phosphor" />
-                  <span>Run Status: {run.status}</span>
+                  <span>Run Status: {run?.status ?? 'NONE'}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <ShieldCheck className="w-3.5 h-3.5 text-chrono-muted" />
-                  <span>Recorded Events: {run.events.length}</span>
+                  <span>Recorded Events: {run?.events.length ?? 0}</span>
                 </div>
               </div>
               <button

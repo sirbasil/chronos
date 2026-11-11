@@ -21,7 +21,7 @@ export interface ChronosEvent {
   offset_ms?: number; // relative millisecond offset from run started_at
 }
 
-export type RunStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'ABANDONED';
+export type RunStatus = 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
 
 export interface ChronosRun {
   run_id: string;
@@ -37,7 +37,7 @@ export interface ChronosRun {
 export interface ServiceSummary {
   id: string;
   name: string;
-  status: 'HEALTHY' | 'DEGRADED' | 'FAILED' | 'OBSERVED';
+  status: 'HEALTHY' | 'RECOVERED' | 'DEGRADED' | 'FAILED' | 'OBSERVED';
   container_name: string;
   compose_service: string;
   port: number;

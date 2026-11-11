@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChronosEvent, ChronosRun, ServiceSummary } from '../../types/events';
 import { AppMode } from '../../types/api';
+import { formatSignedOffsetMs, formatExactSignedDelta } from '../../utils/runTelemetry';
+import { computeTraceLayout } from '../../utils/traceGeometry';
 import { RotateCcw, ZoomIn, ZoomOut, Activity } from 'lucide-react';
 
 interface TraceInstrumentProps {
-  run: ChronosRun;
+  run: ChronosRun | null;
   services: ServiceSummary[];
   selectedEvent: ChronosEvent | null;
   selectedServiceId: string | null;
@@ -49,30 +51,27 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
     return () => ro.disconnect();
   }, []);
 
-  // Maximum time duration in milliseconds with margin
-  const lastOffset = run.events.length > 0
-    ? Math.max(...run.events.map((e) => e.offset_ms ?? 0))
-    : 0;
-  const marginMs = Math.max(20, Math.round(lastOffset * 0.05));
-  const maxOffset = Math.max(140, lastOffset + marginMs);
-  const baseWidthPx = Math.max(720, containerWidth);
-  const trackWidthPx = Math.max(baseWidthPx, Math.round(baseWidthPx * zoomLevel));
-
-  const timeToPx = (ms: number) => {
-    if (maxOffset <= 0) return 30;
-    return (ms / maxOffset) * (trackWidthPx - 60) + 30;
-  };
-
-  const pxToTime = (px: number) => {
-    if (trackWidthPx <= 60 || maxOffset <= 0) return 0;
-    const raw = ((px - 30) / (trackWidthPx - 60)) * maxOffset;
-    return Math.max(0, Math.min(maxOffset, raw));
-  };
+  const runEvents = run?.events ?? [];
+  const layout = computeTraceLayout({
+    events: runEvents,
+    containerWidth,
+    zoomLevel,
+  });
+  const {
+    hasPreExecEvents,
+    zeroX,
+    trackWidthPx,
+    majorTicks,
+    timeToPx,
+    pxToTime,
+    eventToPx,
+    markers,
+  } = layout;
 
   // Auto-scroll to selected event if zoomed in and out of viewport
   useEffect(() => {
     if (selectedEvent && scrollContainerRef.current) {
-      const x = timeToPx(selectedEvent.offset_ms ?? 0);
+      const x = eventToPx(selectedEvent);
       const container = scrollContainerRef.current;
       const visibleWidth = container.clientWidth;
       if (x < container.scrollLeft + 40 || x > container.scrollLeft + visibleWidth - 40) {
@@ -82,7 +81,7 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
         });
       }
     }
-  }, [selectedEvent?.event_id, zoomLevel]);
+  }, [selectedEvent?.event_id, zoomLevel, trackWidthPx]);
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Only respond to primary button (left click)
@@ -127,21 +126,6 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
       window.removeEventListener('pointercancel', upListener);
     };
   }, []);
-
-  // Time grid tick intervals adapted to run duration
-  let baseTickStep = 25;
-  if (maxOffset > 10000) baseTickStep = 2000;
-  else if (maxOffset > 5000) baseTickStep = 1000;
-  else if (maxOffset > 2000) baseTickStep = 500;
-  else if (maxOffset > 800) baseTickStep = 200;
-  else if (maxOffset > 400) baseTickStep = 100;
-  else if (maxOffset > 200) baseTickStep = 50;
-
-  const majorTickStep = zoomLevel >= 1.5 ? Math.max(5, Math.floor(baseTickStep / 2)) : baseTickStep;
-  const majorTicks: number[] = [];
-  for (let t = 0; t <= maxOffset; t += majorTickStep) {
-    majorTicks.push(t);
-  }
 
   // Get glyph styling and coloration for each event type
   const getEventStyle = (event: ChronosEvent) => {
@@ -246,11 +230,16 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
     }
   };
 
-  // Fixed Channel Geometry Constants
+  // Fixed Channel Geometry Constants — compact so 3 channels avoid vertical clipping
   const rulerHeightPx = 28;
-  const channelHeightPx = 82;
-  const channelMarginPx = 14;
-  const channelTopPadPx = 12;
+  const channelHeightPx = 76;
+  const channelMarginPx = 10;
+  const channelTopPadPx = 10;
+  const totalTrackHeightPx =
+    rulerHeightPx +
+    channelTopPadPx * 2 +
+    services.length * channelHeightPx +
+    Math.max(0, services.length - 1) * channelMarginPx;
 
   const getServiceCenterY = (serviceId: string) => {
     const idx = services.findIndex((s) => s.id === serviceId);
@@ -259,19 +248,19 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
   };
 
   // Generate luminous plotted SVG trace path connecting consecutive events
-  const sortedEvents = [...run.events].sort((a, b) => (a.offset_ms ?? 0) - (b.offset_ms ?? 0));
+  const sortedEvents = markers.map((m) => m.event);
   let tracePathD = '';
   if (sortedEvents.length > 0) {
-    const p0x = timeToPx(sortedEvents[0].offset_ms ?? 0);
+    const p0x = eventToPx(sortedEvents[0]);
     const p0y = getServiceCenterY(sortedEvents[0].service_id);
     tracePathD = `M ${p0x} ${p0y}`;
 
     for (let i = 1; i < sortedEvents.length; i++) {
       const prev = sortedEvents[i - 1];
       const curr = sortedEvents[i];
-      const x1 = timeToPx(prev.offset_ms ?? 0);
+      const x1 = eventToPx(prev);
       const y1 = getServiceCenterY(prev.service_id);
-      const x2 = timeToPx(curr.offset_ms ?? 0);
+      const x2 = eventToPx(curr);
       const y2 = getServiceCenterY(curr.service_id);
 
       if (y1 === y2) {
@@ -283,11 +272,26 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
     }
   }
 
+  const getChannelLampClass = (status: ServiceSummary['status']) => {
+    switch (status) {
+      case 'HEALTHY':
+        return 'bg-chrono-success shadow-[0_0_6px_#00ff88]';
+      case 'RECOVERED':
+        return 'bg-[#22d3ee] shadow-[0_0_6px_#22d3ee]';
+      case 'FAILED':
+        return 'bg-chrono-red shadow-[0_0_6px_#ff3333] animate-pulse';
+      case 'DEGRADED':
+        return 'bg-chrono-amber shadow-[0_0_6px_#ff9e00] animate-pulse';
+      default:
+        return 'bg-chrono-muted';
+    }
+  };
+
   return (
-    <div className="instrument-cluster-frame flex flex-col h-full overflow-hidden select-none">
+    <div className="instrument-cluster-frame flex flex-col h-full min-h-[280px] overflow-hidden select-none">
       {/* 1. Oscilloscope Header Bezel */}
-      <div className="h-[40px] bg-[#0c1209] border-b border-chrono-grid flex items-center justify-between px-3 shrink-0">
-        <div className="flex items-center gap-3">
+      <div className="min-h-[40px] bg-[#0c1209] border-b border-chrono-grid flex flex-wrap items-center justify-between gap-2 px-3 py-1 shrink-0">
+        <div className="flex flex-wrap items-center gap-2.5">
           <div className="w-2.5 h-2.5 bg-chrono-phosphor rounded-sm shadow-[0_0_8px_#b8ff00] animate-pulse" />
           <span className="font-mono text-xs font-bold tracking-wider text-chrono-phosphor drop-shadow-[0_0_6px_rgba(184,255,0,0.5)]">
             PANORAMIC EXECUTION TRACE // OSCILLOGRAPHIC DISPLAY
@@ -309,17 +313,17 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
             <button
               onClick={() => setZoomLevel((z) => Math.max(0.75, +(z - 0.25).toFixed(2)))}
               className="px-2 py-1 hover:bg-[#12190e] text-chrono-muted hover:text-chrono-phosphor flex items-center gap-1 transition-colors"
-              title="Zoom Out Graticule"
+              title="Zoom Out Graticule (min 0.75X)"
             >
               <ZoomOut className="w-3 h-3" />
             </button>
             <span className="px-2.5 py-0.5 text-[10px] text-chrono-phosphor font-bold border-x border-chrono-grid tracking-wider">
-              {zoomLevel.toFixed(1)}X
+              {zoomLevel.toFixed(2).replace(/\.00$/, '.0')}X
             </span>
             <button
               onClick={() => setZoomLevel((z) => Math.min(2.5, +(z + 0.25).toFixed(2)))}
               className="px-2 py-1 hover:bg-[#12190e] text-chrono-muted hover:text-chrono-phosphor flex items-center gap-1 transition-colors"
-              title="Zoom In Graticule"
+              title="Zoom In Graticule (max 2.50X)"
             >
               <ZoomIn className="w-3 h-3" />
             </button>
@@ -339,12 +343,15 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
         </div>
       </div>
 
-      {/* 2. Main Multi-Track Frame: Pinned Channel Plaque Column + Scrollable Timeline */}
-      <div className="flex-1 flex overflow-hidden min-h-0 bg-[#040604]">
+      {/* 2. Main Multi-Track Frame: Synchronized vertical scroll for Channel Column + Timeline */}
+      <div className="flex-1 overflow-y-auto overflow-x-hidden flex items-start min-h-0 bg-[#040604]">
         {/* Pinned Left Channel Plaques Column */}
-        <div className="w-[170px] shrink-0 border-r border-chrono-grid bg-[#070b05] flex flex-col z-20 shadow-md">
+        <div
+          className="w-[155px] sm:w-[170px] shrink-0 border-r border-chrono-grid bg-[#070b05] flex flex-col z-20 shadow-md"
+          style={{ minHeight: `${totalTrackHeightPx}px` }}
+        >
           {/* Top Header of Channel Column */}
-          <div className="h-7 border-b border-chrono-grid-bright bg-[#060a04] px-2.5 flex items-center justify-between">
+          <div className="h-7 border-b border-chrono-grid-bright bg-[#060a04] px-2.5 flex items-center justify-between shrink-0">
             <span className="text-[9px] font-mono font-bold text-chrono-muted tracking-widest uppercase">
               CHANNELS
             </span>
@@ -352,7 +359,7 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
           </div>
 
           {/* Service Channel Headers (Exact alignment with timeline tracks) */}
-          <div className="flex flex-col py-3 px-2 gap-[14px]">
+          <div className="flex flex-col py-[10px] px-2 gap-[10px]">
             {services.map((svc, idx) => {
               const isSelected = selectedServiceId === svc.id;
 
@@ -360,7 +367,7 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
                 <div
                   key={svc.id}
                   onClick={onSelectService ? () => onSelectService(svc) : undefined}
-                  className={`h-[82px] p-2 border flex flex-col justify-between transition-all cursor-pointer ${
+                  className={`h-[76px] p-2 border flex flex-col justify-between transition-all cursor-pointer ${
                     isSelected
                       ? 'border-chrono-phosphor bg-[#121b0d] shadow-[inset_0_0_12px_rgba(184,255,0,0.2)]'
                       : 'border-chrono-grid bg-[#040604] hover:border-chrono-muted hover:bg-[#0c1209]'
@@ -371,13 +378,7 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
                     <span className="text-[9px] font-mono font-bold text-chrono-muted">
                       CH-0{idx + 1}
                     </span>
-                    <div
-                      className={`w-2 h-2 rounded-full ${
-                        svc.status === 'HEALTHY'
-                          ? 'bg-chrono-success shadow-[0_0_6px_#00ff88]'
-                          : 'bg-chrono-amber shadow-[0_0_6px_#ff9e00]'
-                      }`}
-                    />
+                    <div className={`w-2 h-2 rounded-full ${getChannelLampClass(svc.status)}`} />
                   </div>
 
                   <div>
@@ -402,7 +403,7 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
           className="flex-1 overflow-x-auto overflow-y-hidden relative crt-screen cursor-crosshair select-none"
-          style={{ touchAction: 'none' }}
+          style={{ touchAction: 'none', minHeight: `${totalTrackHeightPx}px` }}
         >
           {/* CRT Init Sweep Animation */}
           <div className="crt-sweep-line" />
@@ -411,11 +412,22 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
           <div className="absolute inset-0 pointer-events-none crt-scanlines z-10" />
 
           <div
-            className="relative h-full graticule-grid-major"
-            style={{ width: `${trackWidthPx}px`, minWidth: '100%' }}
+            className="relative graticule-grid-major"
+            style={{ width: `${trackWidthPx}px`, height: `${totalTrackHeightPx}px` }}
           >
             {/* Top Time Scale / Ruler */}
             <div className="h-7 border-b border-chrono-grid-bright bg-[#060a04]/90 flex items-center relative select-none">
+              {hasPreExecEvents && (
+                <div
+                  className="absolute bottom-0 flex flex-col items-center pointer-events-none"
+                  style={{ left: '48px' }}
+                >
+                  <span className="text-[9px] font-mono font-bold text-chrono-amber leading-none -translate-x-1/2 mb-1.5">
+                    PRE
+                  </span>
+                  <div className="w-[1px] h-2 bg-chrono-amber/60" />
+                </div>
+              )}
               {majorTicks.map((tick) => {
                 const xPos = timeToPx(tick);
                 return (
@@ -433,6 +445,13 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
               })}
             </div>
 
+            {hasPreExecEvents && (
+              <div
+                className="absolute top-7 bottom-0 border-l border-dashed border-chrono-amber/40 pointer-events-none"
+                style={{ left: `${zeroX}px` }}
+              />
+            )}
+
             {/* Vertical Illuminated Graticule Lines */}
             {majorTicks.map((tick) => {
               const xPos = timeToPx(tick);
@@ -447,8 +466,8 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
 
             {/* SVG Luminous Plotted Signal Trace Layer */}
             <svg
-              className="absolute top-0 left-0 w-full h-full pointer-events-none z-10"
-              style={{ width: `${trackWidthPx}px`, height: '100%' }}
+              className="absolute top-0 left-0 pointer-events-none z-10"
+              style={{ width: `${trackWidthPx}px`, height: `${totalTrackHeightPx}px` }}
             >
               <defs>
                 <filter id="trace-glow-sharp" x="-20%" y="-20%" width="140%" height="140%">
@@ -475,16 +494,27 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
               )}
             </svg>
 
+            {/* Empty State Notice */}
+            {(!run || runEvents.length === 0) && (
+              <div className="absolute inset-0 top-7 flex items-center justify-center pointer-events-none z-15">
+                <div className="px-4 py-2 bg-[#040604]/90 border border-chrono-grid font-mono text-[11px] text-chrono-muted">
+                  {!run
+                    ? 'NO ACTIVE RUN SELECTED — CREATE A RUN TO BEGIN TRACE CAPTURE'
+                    : 'NO EVENTS RECORDED FOR THIS RUN YET — EXECUTE CHECKOUT OR INJECT FAILURE'}
+                </div>
+              </div>
+            )}
+
             {/* Service Channel Track Lanes */}
-            <div className="relative z-20 flex flex-col py-3 px-2 gap-[14px] pointer-events-none">
+            <div className="relative z-20 flex flex-col py-[10px] px-2 gap-[10px] pointer-events-none">
               {services.map((svc) => {
                 const isServiceHighlighted = selectedServiceId === svc.id;
-                const svcEvents = run.events.filter((e) => e.service_id === svc.id);
+                const svcMarkers = markers.filter((m) => m.event.service_id === svc.id);
 
                 return (
                   <div
                     key={svc.id}
-                    className={`relative h-[82px] border transition-all flex items-center pointer-events-none ${
+                    className={`relative h-[76px] border transition-all flex items-center pointer-events-none ${
                       isServiceHighlighted
                         ? 'border-chrono-phosphor/80 bg-[#0c1608]/70 shadow-[inset_0_0_20px_rgba(184,255,0,0.15)]'
                         : 'border-chrono-grid/60 bg-[#060a04]/60'
@@ -494,11 +524,16 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
                     <div className="absolute left-0 right-0 top-1/2 -translate-y-1/2 h-[1px] bg-chrono-phosphor/20 pointer-events-none" />
 
                     {/* Interactive Event Markers Placed on this Channel Track */}
-                    {svcEvents.map((evt) => {
+                    {svcMarkers.map(({ event: evt, x, staggerRow }) => {
                       const offset = evt.offset_ms ?? 0;
-                      const x = timeToPx(offset);
                       const isSelected = selectedEvent?.event_id === evt.event_id;
                       const style = getEventStyle(evt);
+                      const topPosClass =
+                        staggerRow === -1
+                          ? 'top-[28%]'
+                          : staggerRow === 1
+                          ? 'top-[72%]'
+                          : 'top-1/2';
 
                       return (
                         <div
@@ -521,14 +556,15 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
                             setTooltipPos({ x: xPos, y: yPos, placement: showBelow ? 'bottom' : 'top' });
                           }}
                           onMouseLeave={() => setHoveredEvent(null)}
-                          className={`absolute top-1/2 -translate-y-1/2 -translate-x-1/2 cursor-pointer group flex flex-col items-center transition-all pointer-events-auto select-none ${
-                            isSelected ? 'scale-125 z-40' : 'hover:scale-115 z-30'
+                          className={`absolute ${topPosClass} -translate-y-1/2 -translate-x-1/2 cursor-pointer group flex flex-col items-center transition-all pointer-events-auto select-none ${
+                            isSelected ? 'scale-120 z-40' : 'hover:scale-110 z-30'
                           }`}
                           style={{ left: `${x}px` }}
+                          title={formatExactSignedDelta(offset)}
                         >
                           {/* Event Capsule */}
                           <div
-                            className={`px-2 py-0.5 border-2 text-[9px] font-mono font-bold tracking-wider flex items-center gap-1.5 rounded-none transition-all ${
+                            className={`px-2 py-0.5 border-2 text-[9px] font-mono font-bold tracking-wider flex items-center gap-1 rounded-none transition-all whitespace-nowrap ${
                               style.badgeBg
                             } ${style.borderColor} ${style.textColor} ${style.glow} ${
                               isSelected
@@ -541,8 +577,8 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
                           </div>
 
                           {/* Offset Indicator Badge */}
-                          <span className="text-[9px] font-mono font-semibold text-chrono-text mt-1 leading-none drop-shadow-[0_0_3px_#000]">
-                            +{offset}ms
+                          <span className="text-[9px] font-mono font-semibold text-chrono-text mt-0.5 leading-none drop-shadow-[0_0_3px_#000] whitespace-nowrap">
+                            {formatSignedOffsetMs(offset)}
                           </span>
                         </div>
                       );
@@ -584,7 +620,9 @@ export const TraceInstrument: React.FC<TraceInstrumentProps> = ({
               {hoveredEvent.event_type}
             </span>
             <span className="text-chrono-muted">@ {hoveredEvent.service_id}</span>
-            <span className="text-chrono-amber font-bold ml-auto">+{hoveredEvent.offset_ms}ms</span>
+            <span className="text-chrono-amber font-bold ml-auto">
+              {formatSignedOffsetMs(hoveredEvent.offset_ms ?? 0)}
+            </span>
           </div>
           <div className="text-[10px] text-chrono-text max-w-[280px] bg-[#020402] p-1.5 border border-chrono-grid leading-normal">
             {getEventSummary(hoveredEvent)}

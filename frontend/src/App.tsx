@@ -1,7 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ChronosEvent, ChronosRun, ServiceSummary } from './types/events';
 import { NavDestination, InspectorTarget } from './types/ui';
-import { AppMode, BackendConnectionState, BackendHealth, TopologyResponse } from './types/api';
+import {
+  AppMode,
+  BackendConnectionState,
+  BackendHealth,
+  TopologyResponse,
+  ExecutionResultInfo,
+  ExecutionErrorInfo,
+} from './types/api';
 import { DEMO_PREVIEW_RUNS } from './data/fixtures';
 import {
   checkHealth,
@@ -14,6 +21,10 @@ import {
   getRunTopology,
   buildChronosRun,
   deriveServicesFromRun,
+  deriveCheckoutOutcome,
+  canSwitchRun,
+  shouldApplyRunResponse,
+  parseApiError,
 } from './services/chronosApi';
 import { Header } from './components/Header';
 import { Navigation } from './components/Navigation';
@@ -22,19 +33,8 @@ import { Inspector } from './components/Inspector';
 import { MonitorView } from './components/monitor/MonitorView';
 import { TopologyView } from './components/views/TopologyView';
 import { RunsView } from './components/views/RunsView';
-import { UnimplementedView } from './components/views/UnimplementedView';
 import { AlertTriangle, RefreshCw, Radio, Lock, KeyRound } from 'lucide-react';
 import { AuthProvider, useAuth } from './auth/AuthContext';
-
-const FALLBACK_EMPTY_RUN: ChronosRun = {
-  run_id: '00000000-0000-0000-0000-000000000000',
-  started_at: new Date().toISOString(),
-  completed_at: null,
-  status: 'IN_PROGRESS',
-  description: 'Awaiting Run Telemetry...',
-  is_failure_experiment: false,
-  events: [],
-};
 
 const CockpitApp: React.FC = () => {
   const { status: authStatus, user, error: authError, signIn, signOut } = useAuth();
@@ -52,29 +52,26 @@ const CockpitApp: React.FC = () => {
   // Active Experiment Execution States
   const [isExecutingCheckout, setIsExecutingCheckout] = useState<boolean>(false);
   const [isInjectingFailure, setIsInjectingFailure] = useState<boolean>(false);
-  const [lastExecutionResult, setLastExecutionResult] = useState<{
-    status: number;
-    message: string;
-    details?: string;
-  } | null>(null);
-  const [executionError, setExecutionError] = useState<string | null>(null);
+  const [lastExecutionResult, setLastExecutionResult] = useState<ExecutionResultInfo | null>(null);
+  const [executionError, setExecutionError] = useState<ExecutionErrorInfo | null>(null);
   const selectedRunIdRef = useRef<string | null>(null);
 
   // Runs & Active Data
   const [liveRuns, setLiveRuns] = useState<ChronosRun[]>([]);
-  const [currentRun, setCurrentRun] = useState<ChronosRun>(DEMO_PREVIEW_RUNS[0]);
+  const [currentRun, setCurrentRun] = useState<ChronosRun | null>(null);
   const [liveTopology, setLiveTopology] = useState<TopologyResponse | null>(null);
 
   // Active view list of runs
   const runs = mode === 'LIVE' ? liveRuns : DEMO_PREVIEW_RUNS;
 
-  // Dynamically derive service metrics for the current run
+  // Dynamically derive service metrics for the current run and live health signals
   const services = useMemo<ServiceSummary[]>(() => {
-    return deriveServicesFromRun(currentRun);
-  }, [currentRun]);
+    return deriveServicesFromRun(currentRun, { mode, backendHealth });
+  }, [currentRun, mode, backendHealth]);
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
   const [currentDestination, setCurrentDestination] = useState<NavDestination>('MONITOR');
+  const [focusStagingToken, setFocusStagingToken] = useState<number>(0);
   const [selectedEvent, setSelectedEvent] = useState<ChronosEvent | null>(null);
   const [selectedServiceId, setSelectedServiceId] = useState<string | null>('orders');
   const [currentTimeMs, setCurrentTimeMs] = useState<number>(0);
@@ -83,6 +80,17 @@ const CockpitApp: React.FC = () => {
   const [inspectorTarget, setInspectorTarget] = useState<InspectorTarget>(null);
 
   const fetchRequestIdRef = useRef<number>(0);
+  const liveDataRequestIdRef = useRef<number>(0);
+  const modeRef = useRef<AppMode>(mode);
+  const isActionInProgressRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
+    isActionInProgressRef.current = isExecutingCheckout || isInjectingFailure || isCreatingRun;
+  }, [isExecutingCheckout, isInjectingFailure, isCreatingRun]);
 
   // Keyboard shortcut: Escape closes context inspector
   useEffect(() => {
@@ -97,8 +105,12 @@ const CockpitApp: React.FC = () => {
 
   // Load a specific run's full events and topology from FastAPI
   const loadLiveRunDetails = useCallback(
-    async (runId: string, runSummaryList?: ChronosRun[]) => {
+    async (runId: string, runSummaryList?: ChronosRun[]): Promise<ChronosRun | null> => {
       const reqId = ++fetchRequestIdRef.current;
+      if (modeRef.current !== 'LIVE') {
+        setIsLoading(false);
+        return null;
+      }
       setIsLoading(true);
 
       try {
@@ -107,12 +119,35 @@ const CockpitApp: React.FC = () => {
           getRunTopology(runId).catch(() => null),
         ]);
 
-        // Stale response guard
-        if (reqId !== fetchRequestIdRef.current) return;
+        // Stale response and mode-leakage guards
+        if (
+          !shouldApplyRunResponse({
+            requestId: reqId,
+            activeRequestId: fetchRequestIdRef.current,
+            requestMode: 'LIVE',
+            currentMode: modeRef.current,
+            targetRunId: runId,
+            selectedRunId: selectedRunIdRef.current,
+          })
+        ) {
+          return null;
+        }
 
         let summary = runSummaryList?.find((r) => r.run_id === runId);
         if (!summary) {
           const runRecord = await getRun(runId);
+          if (
+            !shouldApplyRunResponse({
+              requestId: reqId,
+              activeRequestId: fetchRequestIdRef.current,
+              requestMode: 'LIVE',
+              currentMode: modeRef.current,
+              targetRunId: runId,
+              selectedRunId: selectedRunIdRef.current,
+            })
+          ) {
+            return null;
+          }
           summary = buildChronosRun(runRecord, events);
         } else {
           summary = buildChronosRun(
@@ -130,7 +165,7 @@ const CockpitApp: React.FC = () => {
         setLiveTopology(topology);
         selectedRunIdRef.current = runId;
 
-        // Update selected event and timeline
+        // Update selected event and timeline (clamp scrubber to >= 0 execution timeline)
         const initialEvent =
           summary.events.find((e) => e.event_type === 'FAILURE_INJECTED') ||
           summary.events.find((e) => e.event_type === 'SERVICE_ERROR') ||
@@ -139,19 +174,21 @@ const CockpitApp: React.FC = () => {
 
         setSelectedEvent(initialEvent);
         setSelectedServiceId(initialEvent ? initialEvent.service_id : 'orders');
-        setCurrentTimeMs(initialEvent ? (initialEvent.offset_ms ?? 0) : 0);
+        setCurrentTimeMs(initialEvent ? Math.max(0, initialEvent.offset_ms ?? 0) : 0);
 
         if (initialEvent) {
           setInspectorTarget({ type: 'EVENT', event: initialEvent });
         } else {
           setInspectorTarget({ type: 'RUN_SUMMARY', run: summary });
         }
+        return summary;
       } catch (err: unknown) {
-        if (reqId === fetchRequestIdRef.current) {
+        if (reqId === fetchRequestIdRef.current && modeRef.current === 'LIVE') {
           console.error('Failed to load run details:', err);
         }
+        return null;
       } finally {
-        if (reqId === fetchRequestIdRef.current) {
+        if (reqId === fetchRequestIdRef.current || modeRef.current !== 'LIVE') {
           setIsLoading(false);
         }
       }
@@ -161,6 +198,10 @@ const CockpitApp: React.FC = () => {
 
   // Primary loader for LIVE backend telemetry
   const loadLiveData = useCallback(async () => {
+    if (modeRef.current !== 'LIVE' || authStatus !== 'AUTHENTICATED') return;
+    const reqId = ++liveDataRequestIdRef.current;
+    let delegatedToDetails = false;
+
     setIsLoading(true);
     setConnectionState('CONNECTING');
     setErrorMessage(null);
@@ -168,18 +209,22 @@ const CockpitApp: React.FC = () => {
     try {
       // 1. Health check
       const health = await checkHealth();
+      if (reqId !== liveDataRequestIdRef.current || modeRef.current !== 'LIVE') return;
       setBackendHealth(health);
       setConnectionState('CONNECTED');
       setLastContactTime(new Date());
 
       // 2. Fetch runs list
       const summaries = await getRuns(50);
+      if (reqId !== liveDataRequestIdRef.current || modeRef.current !== 'LIVE') return;
+
       if (summaries.length === 0) {
+        selectedRunIdRef.current = null;
         setLiveRuns([]);
-        setCurrentRun(FALLBACK_EMPTY_RUN);
+        setCurrentRun(null);
         setLiveTopology(null);
         setSelectedEvent(null);
-        setIsLoading(false);
+        setInspectorTarget(null);
         return;
       }
 
@@ -201,8 +246,15 @@ const CockpitApp: React.FC = () => {
         ? convertedRuns.find((r) => r.run_id === selectedRunIdRef.current)
         : null;
       const targetRun = preservedRun || convertedRuns[0];
+      if (!preservedRun || selectedRunIdRef.current !== targetRun.run_id) {
+        setLastExecutionResult(null);
+        setExecutionError(null);
+      }
+      selectedRunIdRef.current = targetRun.run_id;
+      delegatedToDetails = true;
       await loadLiveRunDetails(targetRun.run_id, convertedRuns);
     } catch (err: unknown) {
+      if (reqId !== liveDataRequestIdRef.current || modeRef.current !== 'LIVE') return;
       console.error('Live backend connection error:', err);
       setConnectionState('DISCONNECTED');
       setErrorMessage(
@@ -211,15 +263,20 @@ const CockpitApp: React.FC = () => {
           : 'Unable to connect to FastAPI backend at http://127.0.0.1:8000'
       );
     } finally {
-      setIsLoading(false);
+      if (reqId === liveDataRequestIdRef.current && (!delegatedToDetails || modeRef.current !== 'LIVE')) {
+        setIsLoading(false);
+      }
     }
-  }, [loadLiveRunDetails]);
+  }, [authStatus, loadLiveRunDetails]);
 
-  // Initial mount load
+  // Initial mount and mode-change load
   useEffect(() => {
     if (mode === 'LIVE') {
-      loadLiveData();
+      if (authStatus === 'AUTHENTICATED') {
+        loadLiveData();
+      }
     } else {
+      setIsLoading(false);
       setConnectionState('CONNECTED');
       setCurrentRun(DEMO_PREVIEW_RUNS[0]);
       const initialEvent =
@@ -227,69 +284,128 @@ const CockpitApp: React.FC = () => {
         DEMO_PREVIEW_RUNS[0].events[0];
       setSelectedEvent(initialEvent);
       setSelectedServiceId('payment');
-      setCurrentTimeMs(initialEvent ? (initialEvent.offset_ms ?? 0) : 0);
+      setCurrentTimeMs(initialEvent ? Math.max(0, initialEvent.offset_ms ?? 0) : 0);
       setInspectorTarget(initialEvent ? { type: 'EVENT', event: initialEvent } : null);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode]);
+  }, [mode, authStatus, loadLiveData]);
 
   // Modest background polling (every 5 seconds in LIVE mode)
   useEffect(() => {
-    if (mode !== 'LIVE') return;
+    if (mode !== 'LIVE' || authStatus !== 'AUTHENTICATED') return;
+    let cancelled = false;
 
     const interval = setInterval(async () => {
+      if (cancelled || modeRef.current !== 'LIVE' || isActionInProgressRef.current || isLoading) {
+        return;
+      }
+
+      const polledRunId = currentRun?.run_id ?? null;
+
       try {
         const health = await checkHealth();
+        if (cancelled || modeRef.current !== 'LIVE') return;
         setBackendHealth(health);
         setConnectionState('CONNECTED');
         setLastContactTime(new Date());
 
         // If the current run is IN_PROGRESS, poll its events to track completion
-        if (currentRun.status === 'IN_PROGRESS' && currentRun.run_id !== FALLBACK_EMPTY_RUN.run_id) {
+        if (
+          !isActionInProgressRef.current &&
+          currentRun &&
+          currentRun.status === 'IN_PROGRESS' &&
+          polledRunId &&
+          selectedRunIdRef.current === polledRunId
+        ) {
           const [events, summary] = await Promise.all([
-            getRunEvents(currentRun.run_id),
-            getRun(currentRun.run_id),
+            getRunEvents(polledRunId),
+            getRun(polledRunId),
           ]);
+          if (
+            cancelled ||
+            modeRef.current !== 'LIVE' ||
+            isActionInProgressRef.current ||
+            selectedRunIdRef.current !== polledRunId
+          ) {
+            return;
+          }
           if (events.length !== currentRun.events.length || summary.status !== currentRun.status) {
             const updated = buildChronosRun(summary, events);
             setCurrentRun(updated);
+            setLiveRuns((prev) =>
+              prev.map((r) =>
+                r.run_id === polledRunId
+                  ? { ...r, status: summary.status, completed_at: summary.completed_at ?? null }
+                  : r
+              )
+            );
           }
         }
       } catch {
-        setConnectionState('DISCONNECTED');
+        if (!cancelled && modeRef.current === 'LIVE') {
+          setConnectionState('DISCONNECTED');
+        }
       }
     }, 5000);
 
-    return () => clearInterval(interval);
-  }, [mode, currentRun.status, currentRun.run_id, currentRun.events.length]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [mode, currentRun?.status, currentRun?.run_id, currentRun?.events.length, isLoading]);
 
   // Switch between LIVE and PREVIEW modes
   const handleToggleMode = (newMode: AppMode) => {
-    if (newMode === mode) return;
+    if (newMode === mode || isActionInProgressRef.current) return;
+    modeRef.current = newMode;
+    ++fetchRequestIdRef.current;
+    ++liveDataRequestIdRef.current;
+
     setRunCreationError(null);
+    setLastExecutionResult(null);
+    setExecutionError(null);
+    setErrorMessage(null);
     setMode(newMode);
 
     if (newMode === 'PREVIEW') {
-      setCurrentRun(DEMO_PREVIEW_RUNS[0]);
+      selectedRunIdRef.current = null;
+      setIsLoading(false);
+      setLiveRuns([]);
       setLiveTopology(null);
+      setConnectionState('CONNECTED');
+      setCurrentRun(DEMO_PREVIEW_RUNS[0]);
       const initialEvent =
         DEMO_PREVIEW_RUNS[0].events.find((e) => e.event_type === 'FAILURE_INJECTED') ||
         DEMO_PREVIEW_RUNS[0].events[0];
       setSelectedEvent(initialEvent);
       setSelectedServiceId('payment');
-      setCurrentTimeMs(initialEvent ? (initialEvent.offset_ms ?? 0) : 0);
+      setCurrentTimeMs(initialEvent ? Math.max(0, initialEvent.offset_ms ?? 0) : 0);
       setInspectorTarget(initialEvent ? { type: 'EVENT', event: initialEvent } : null);
     } else {
-      loadLiveData();
+      selectedRunIdRef.current = null;
+      setCurrentRun(null);
+      setLiveTopology(null);
+      setSelectedEvent(null);
+      setInspectorTarget(null);
     }
   };
 
   // When switching runs from selector
   const handleSelectRun = (newRun: ChronosRun) => {
+    if (
+      !canSwitchRun({
+        isExecutingCheckout,
+        isInjectingFailure,
+        isCreatingRun,
+      }) ||
+      isActionInProgressRef.current
+    ) {
+      return;
+    }
+
     selectedRunIdRef.current = newRun.run_id;
     setLastExecutionResult(null);
     setExecutionError(null);
-    if (mode === 'LIVE') {
+    if (modeRef.current === 'LIVE') {
       loadLiveRunDetails(newRun.run_id);
     } else {
       setCurrentRun(newRun);
@@ -297,14 +413,24 @@ const CockpitApp: React.FC = () => {
         newRun.events.find((e) => e.event_type === 'FAILURE_INJECTED') || newRun.events[0] || null;
       setSelectedEvent(initialEvent);
       setSelectedServiceId(initialEvent ? initialEvent.service_id : 'orders');
-      setCurrentTimeMs(initialEvent ? (initialEvent.offset_ms ?? 0) : 0);
+      setCurrentTimeMs(initialEvent ? Math.max(0, initialEvent.offset_ms ?? 0) : 0);
       setInspectorTarget(initialEvent ? { type: 'EVENT', event: initialEvent } : null);
     }
   };
 
   // Create a new run via POST /runs and immediately load it
   const handleCreateRun = async () => {
-    if (isCreatingRun || mode !== 'LIVE') return;
+    if (
+      isCreatingRun ||
+      isExecutingCheckout ||
+      isInjectingFailure ||
+      isActionInProgressRef.current ||
+      modeRef.current !== 'LIVE'
+    ) {
+      return;
+    }
+
+    isActionInProgressRef.current = true;
     setIsCreatingRun(true);
     setRunCreationError(null);
     setLastExecutionResult(null);
@@ -312,11 +438,15 @@ const CockpitApp: React.FC = () => {
 
     try {
       const newRunSummary = await createRun();
+      if (modeRef.current !== 'LIVE') return;
+
       const newRunId = newRunSummary.run_id;
       selectedRunIdRef.current = newRunId;
 
       // Refresh runs list from backend
       const summaries = await getRuns(50);
+      if (modeRef.current !== 'LIVE') return;
+
       let convertedRuns: ChronosRun[] = summaries.map((s) => ({
         run_id: s.run_id,
         started_at: s.started_at,
@@ -346,15 +476,17 @@ const CockpitApp: React.FC = () => {
 
       // Load full events and topology for the new run
       await loadLiveRunDetails(newRunId, convertedRuns);
+      if (modeRef.current !== 'LIVE') return;
 
       // Return the user to Monitor view so the new run is immediately accessible
       setCurrentDestination('MONITOR');
     } catch (err: unknown) {
+      if (modeRef.current !== 'LIVE') return;
       console.error('Failed to create run:', err);
-      const message =
-        (err as { message?: string })?.message ||
-        (err instanceof Error ? err.message : 'Failed to initialize run on backend');
-      setRunCreationError(message);
+      const parsed = parseApiError(err, 'Failed to initialize run on backend');
+      setRunCreationError(
+        parsed.status ? `HTTP ${parsed.status}: ${parsed.message}` : parsed.message
+      );
     } finally {
       setIsCreatingRun(false);
     }
@@ -362,25 +494,42 @@ const CockpitApp: React.FC = () => {
 
   // Execute checkout for Order 101 associated with current run ID
   const handleExecuteCheckout = async () => {
-    if (isExecutingCheckout || mode !== 'LIVE' || !currentRun.run_id) return;
+    if (
+      isExecutingCheckout ||
+      isInjectingFailure ||
+      isCreatingRun ||
+      isLoading ||
+      isActionInProgressRef.current ||
+      modeRef.current !== 'LIVE' ||
+      !currentRun?.run_id
+    ) {
+      return;
+    }
+
+    isActionInProgressRef.current = true;
     setIsExecutingCheckout(true);
+    setLastExecutionResult(null);
     setExecutionError(null);
 
     const targetRunId = currentRun.run_id;
+    const wasFailureExperimentArmed =
+      currentRun.events.some((e) => e.event_type === 'FAILURE_INJECTED') ||
+      currentRun.is_failure_experiment;
 
     try {
       const res = await checkoutOrder(101, targetRunId);
-      setLastExecutionResult({
-        status: 200,
-        message: `Order 101 checkout completed successfully (${res.payment_status || 'approved'})`,
-        details: `Item: ${res.item || 'Keyboard'}, Status: ${res.status || 'completed'}`,
-      });
+      if (modeRef.current !== 'LIVE' || selectedRunIdRef.current !== targetRunId) return;
 
-      // Reload full events, traces and topology for this run
-      await loadLiveRunDetails(targetRunId);
+      const rawPaymentStatus =
+        typeof res.payment_status === 'string' ? res.payment_status.trim() : '';
+
+      // Reload persisted events and run summary BEFORE rendering any approval banner
+      const loadedRun = await loadLiveRunDetails(targetRunId);
+      if (modeRef.current !== 'LIVE') return;
 
       // Refresh runs list to show updated status
       const summaries = await getRuns(50);
+      if (modeRef.current !== 'LIVE') return;
       const convertedRuns: ChronosRun[] = summaries.map((s) => ({
         run_id: s.run_id,
         started_at: s.started_at,
@@ -391,29 +540,97 @@ const CockpitApp: React.FC = () => {
         events: [],
       }));
       setLiveRuns(convertedRuns);
-    } catch (err: unknown) {
-      console.error('Checkout execution error:', err);
-      const message =
-        (err as { message?: string })?.message ||
-        (err instanceof Error ? err.message : 'Checkout execution request failed');
-      setExecutionError(message);
 
-      // Even on failure (e.g. 502/503 from payment), backend finalizes run as FAILED and persists events
-      try {
-        await loadLiveRunDetails(targetRunId);
-        const summaries = await getRuns(50);
-        const convertedRuns: ChronosRun[] = summaries.map((s) => ({
-          run_id: s.run_id,
-          started_at: s.started_at,
-          completed_at: s.completed_at ?? null,
-          status: s.status,
-          description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
-          is_failure_experiment: false,
-          events: [],
-        }));
-        setLiveRuns(convertedRuns);
-      } catch {
-        // secondary catch ignored
+      if (selectedRunIdRef.current !== targetRunId) return;
+
+      if (!loadedRun) {
+        setLastExecutionResult(null);
+        setExecutionError({
+          runId: targetRunId,
+          code: 'TELEMETRY_UNVERIFIED',
+          message:
+            'Checkout returned HTTP 200, but reloading persisted run events failed.',
+          isExpectedFailurePropagation: false,
+          details:
+            'Approval banner suppressed until persisted RESPONSE and REQUEST_END COMPLETED events can be verified.',
+        });
+        return;
+      }
+
+      const outcome = deriveCheckoutOutcome(loadedRun);
+      if (
+        rawPaymentStatus.toLowerCase() === 'approved' &&
+        outcome.hasConfirmedPaymentSuccess
+      ) {
+        setLastExecutionResult({
+          runId: targetRunId,
+          kind: 'checkout',
+          status: 200,
+          message: `Order 101 checkout completed (${rawPaymentStatus})`,
+          details: outcome.paymentRespondedAfterPriorFailure
+            ? `Confirmed persisted RESPONSE 200 & REQUEST_END COMPLETED (prior FAILURE_INJECTED existed, but Payment returned HTTP 200 at checkout) | Item: ${res.item || 'Keyboard'}`
+            : `Confirmed persisted RESPONSE 200 & REQUEST_END COMPLETED | Item: ${res.item || 'Keyboard'} | Status: ${res.status || 'completed'}`,
+        });
+      } else {
+        setLastExecutionResult(null);
+        setExecutionError({
+          runId: targetRunId,
+          code: 'UNCONFIRMED_PAYMENT_OUTCOME',
+          message:
+            'Checkout response could not be confirmed as Payment-approved from persisted run telemetry.',
+          isExpectedFailurePropagation: false,
+          details: `run.status=${loadedRun.status}, payment_status=${rawPaymentStatus || 'missing'}, hasResponse2xx=${outcome.hasResponse2xx}, hasServiceError=${outcome.hasServiceError}`,
+        });
+      }
+    } catch (err: unknown) {
+      if (modeRef.current !== 'LIVE') return;
+      console.error('Checkout execution error:', err);
+      const parsed = parseApiError(err, 'Checkout execution request failed');
+      setLastExecutionResult(null);
+
+      // Expected fault propagation occurs only when a failure experiment was armed and
+      // Orders received an upstream failure from Payment (HTTP 502/503/504)
+      const isExpectedFault =
+        wasFailureExperimentArmed &&
+        (parsed.status === 502 || parsed.status === 503 || parsed.status === 504);
+
+      if (selectedRunIdRef.current === targetRunId) {
+        setExecutionError({
+          runId: targetRunId,
+          status: parsed.status,
+          code: parsed.code,
+          message: parsed.message,
+          isExpectedFailurePropagation: isExpectedFault,
+          details: isExpectedFault
+            ? 'Orders received the injected Payment failure, recorded SERVICE_ERROR and REQUEST_END, and transitioned the run to FAILED.'
+            : parsed.code === 'TIMEOUT'
+              ? 'Client waited longer than the backend timeout without receiving a response. Run telemetry is being refreshed.'
+              : undefined,
+        });
+      }
+
+      // Refresh persisted backend state unless network is completely unreachable
+      if (parsed.code !== 'NETWORK_ERROR') {
+        try {
+          if (selectedRunIdRef.current === targetRunId) {
+            await loadLiveRunDetails(targetRunId);
+          }
+          if (modeRef.current !== 'LIVE') return;
+          const summaries = await getRuns(50);
+          if (modeRef.current !== 'LIVE') return;
+          const convertedRuns: ChronosRun[] = summaries.map((s) => ({
+            run_id: s.run_id,
+            started_at: s.started_at,
+            completed_at: s.completed_at ?? null,
+            status: s.status,
+            description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
+            is_failure_experiment: false,
+            events: [],
+          }));
+          setLiveRuns(convertedRuns);
+        } catch {
+          // secondary catch ignored so original error stays intact
+        }
       }
     } finally {
       setIsExecutingCheckout(false);
@@ -422,28 +639,101 @@ const CockpitApp: React.FC = () => {
 
   // Inject failure into payment service for the current run
   const handleInjectFailure = async () => {
-    if (isInjectingFailure || mode !== 'LIVE' || !currentRun.run_id) return;
+    if (
+      isInjectingFailure ||
+      isExecutingCheckout ||
+      isCreatingRun ||
+      isLoading ||
+      isActionInProgressRef.current ||
+      modeRef.current !== 'LIVE' ||
+      !currentRun?.run_id
+    ) {
+      return;
+    }
+
+    isActionInProgressRef.current = true;
     setIsInjectingFailure(true);
+    setLastExecutionResult(null);
     setExecutionError(null);
 
     const targetRunId = currentRun.run_id;
 
     try {
       const res = await injectFailure(targetRunId, 'payment');
+      if (modeRef.current !== 'LIVE' || selectedRunIdRef.current !== targetRunId) return;
+
       setLastExecutionResult({
+        runId: targetRunId,
+        kind: 'failure_injection',
         status: 200,
         message: `Payment failure injected: Target '${res.target}', Action '${res.action}'`,
-        details: 'Restart policy: unless-stopped (Docker auto-restarts payment container in ~5-10s)',
+        details:
+          'FAILURE_INJECTED event persisted. Payment stays stopped until manually restarted via docker compose start payment.',
       });
 
       // Reload run details to immediately surface FAILURE_INJECTED event
       await loadLiveRunDetails(targetRunId);
+      if (modeRef.current !== 'LIVE') return;
+
+      const summaries = await getRuns(50);
+      if (modeRef.current !== 'LIVE') return;
+      setLiveRuns(
+        summaries.map((s) => ({
+          run_id: s.run_id,
+          started_at: s.started_at,
+          completed_at: s.completed_at ?? null,
+          status: s.status,
+          description: `Run ${s.run_id.slice(0, 8)} (${s.status})`,
+          is_failure_experiment: false,
+          events: [],
+        }))
+      );
     } catch (err: unknown) {
+      if (modeRef.current !== 'LIVE') return;
       console.error('Failure injection error:', err);
-      const message =
-        (err as { message?: string })?.message ||
-        (err instanceof Error ? err.message : 'Failure injection request failed');
-      setExecutionError(message);
+      const parsed = parseApiError(err, 'Failure injection request failed');
+      setLastExecutionResult(null);
+
+      // Refresh run details before finalizing UI state on timeout or ambiguous error
+      let persistedFailureEvent = false;
+      if (parsed.code !== 'NETWORK_ERROR' && selectedRunIdRef.current === targetRunId) {
+        try {
+          const [events, runRecord] = await Promise.all([
+            getRunEvents(targetRunId),
+            getRun(targetRunId),
+          ]);
+          if (modeRef.current === 'LIVE' && selectedRunIdRef.current === targetRunId) {
+            persistedFailureEvent = events.some((e) => e.event_type === 'FAILURE_INJECTED');
+            const updated = buildChronosRun(runRecord, events);
+            setCurrentRun(updated);
+            const focusEvent =
+              updated.events.find((e) => e.event_type === 'FAILURE_INJECTED') ||
+              updated.events[0] ||
+              null;
+            if (focusEvent) {
+              setSelectedEvent(focusEvent);
+              setSelectedServiceId(focusEvent.service_id);
+              setCurrentTimeMs(Math.max(0, focusEvent.offset_ms ?? 0));
+              setInspectorTarget({ type: 'EVENT', event: focusEvent });
+            }
+          }
+        } catch {
+          // secondary catch ignored
+        }
+      }
+
+      if (modeRef.current === 'LIVE' && selectedRunIdRef.current === targetRunId) {
+        setExecutionError({
+          runId: targetRunId,
+          status: parsed.status,
+          code: parsed.code,
+          message: parsed.message,
+          isExpectedFailurePropagation: false,
+          details: persistedFailureEvent
+            ? 'Refreshed telemetry shows FAILURE_INJECTED was recorded on the backend despite the error response. Check run events before retrying.'
+            : 'Refreshed run telemetry. Failure injection did not receive a 2xx confirmation from the backend.',
+        });
+      }
     } finally {
       setIsInjectingFailure(false);
     }
@@ -452,23 +742,24 @@ const CockpitApp: React.FC = () => {
   const handleSelectEvent = (event: ChronosEvent) => {
     setSelectedEvent(event);
     setSelectedServiceId(event.service_id);
-    setCurrentTimeMs(event.offset_ms ?? 0);
+    setCurrentTimeMs(Math.max(0, event.offset_ms ?? 0));
     setInspectorTarget({ type: 'EVENT', event });
     setInspectorOpen(true);
   };
 
   const handleSelectService = (service: ServiceSummary) => {
     setSelectedServiceId(service.id);
-    const svcEvent = currentRun.events.find((e) => e.service_id === service.id);
+    const svcEvent = currentRun?.events.find((e) => e.service_id === service.id);
     if (svcEvent) {
       setSelectedEvent(svcEvent);
-      setCurrentTimeMs(svcEvent.offset_ms ?? 0);
+      setCurrentTimeMs(Math.max(0, svcEvent.offset_ms ?? 0));
     }
     setInspectorTarget({ type: 'SERVICE', service });
     setInspectorOpen(true);
   };
 
   const handleSelectMetric = (_metricKey: string) => {
+    if (!currentRun) return;
     setInspectorTarget({ type: 'RUN_SUMMARY', run: currentRun });
     setInspectorOpen(true);
   };
@@ -614,6 +905,7 @@ const CockpitApp: React.FC = () => {
         onSignOut={signOut}
         onCreateRun={handleCreateRun}
         isCreatingRun={isCreatingRun}
+        isActionInProgress={isExecutingCheckout || isInjectingFailure}
       />
 
       {/* 2. Main Middle Workspace: Left Persistent Navigation Rail + Center Instrument + Right Inspector */}
@@ -622,6 +914,10 @@ const CockpitApp: React.FC = () => {
         <Navigation
           currentDestination={currentDestination}
           onSelectDestination={setCurrentDestination}
+          onFocusExperiments={() => {
+            setCurrentDestination('MONITOR');
+            setFocusStagingToken((prev) => prev + 1);
+          }}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         />
@@ -664,35 +960,6 @@ const CockpitApp: React.FC = () => {
                 </div>
               </div>
             </div>
-          ) : currentDestination === 'MONITOR' ? (
-            <MonitorView
-              run={currentRun}
-              services={services}
-              selectedEvent={selectedEvent}
-              selectedServiceId={selectedServiceId}
-              currentTimeMs={currentTimeMs}
-              onSelectEvent={handleSelectEvent}
-              onSelectService={handleSelectService}
-              onTimeChange={setCurrentTimeMs}
-              onSelectMetric={handleSelectMetric}
-              mode={mode}
-              isExecutingCheckout={isExecutingCheckout}
-              isInjectingFailure={isInjectingFailure}
-              failureInjected={
-                currentRun.events.some((e) => e.event_type === 'FAILURE_INJECTED') ||
-                currentRun.is_failure_experiment
-              }
-              checkoutExecuted={
-                currentRun.status !== 'IN_PROGRESS' ||
-                currentRun.events.some((e) => e.event_type === 'REQUEST_END')
-              }
-              lastExecutionResult={lastExecutionResult}
-              executionError={executionError}
-              onExecuteCheckout={handleExecuteCheckout}
-              onInjectFailure={handleInjectFailure}
-              onDismissExecutionError={() => setExecutionError(null)}
-              user={user}
-            />
           ) : currentDestination === 'TOPOLOGY' ? (
             <TopologyView
               run={currentRun}
@@ -711,6 +978,7 @@ const CockpitApp: React.FC = () => {
               mode={mode}
               isLoading={isLoading}
               isCreatingRun={isCreatingRun}
+              isActionInProgress={isExecutingCheckout || isInjectingFailure}
               creationError={runCreationError}
               onRefresh={loadLiveData}
               onSelectRun={handleSelectRun}
@@ -719,9 +987,42 @@ const CockpitApp: React.FC = () => {
               onDismissError={() => setRunCreationError(null)}
             />
           ) : (
-            <UnimplementedView
-              destination={currentDestination}
-              onReturnToMonitor={() => setCurrentDestination('MONITOR')}
+            <MonitorView
+              run={currentRun}
+              services={services}
+              selectedEvent={selectedEvent}
+              selectedServiceId={selectedServiceId}
+              currentTimeMs={currentTimeMs}
+              onSelectEvent={handleSelectEvent}
+              onSelectService={handleSelectService}
+              onTimeChange={setCurrentTimeMs}
+              onSelectMetric={handleSelectMetric}
+              mode={mode}
+              backendHealth={backendHealth}
+              isLoading={isLoading}
+              isExecutingCheckout={isExecutingCheckout}
+              isInjectingFailure={isInjectingFailure}
+              failureInjected={
+                Boolean(
+                  currentRun &&
+                    (currentRun.events.some((e) => e.event_type === 'FAILURE_INJECTED') ||
+                      currentRun.is_failure_experiment)
+                )
+              }
+              checkoutExecuted={
+                Boolean(
+                  currentRun &&
+                    (currentRun.status !== 'IN_PROGRESS' ||
+                      currentRun.events.some((e) => e.event_type === 'REQUEST_END'))
+                )
+              }
+              lastExecutionResult={lastExecutionResult}
+              executionError={executionError}
+              onExecuteCheckout={handleExecuteCheckout}
+              onInjectFailure={handleInjectFailure}
+              onDismissExecutionError={() => setExecutionError(null)}
+              user={user}
+              focusStagingToken={focusStagingToken}
             />
           )}
         </main>

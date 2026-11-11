@@ -1,6 +1,11 @@
 import React from 'react';
 import { NavDestination } from '../types/ui';
 import {
+  SIDEBAR_NAV_ITEMS,
+  SidebarNavItemId,
+  resolveNavigationSelection,
+} from '../utils/navigation';
+import {
   Activity,
   Layers,
   Network,
@@ -14,29 +19,24 @@ import {
 interface NavigationProps {
   currentDestination: NavDestination;
   onSelectDestination: (dest: NavDestination) => void;
+  onFocusExperiments?: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
 }
 
-interface NavItem {
-  id: NavDestination;
-  label: string;
-  sublabel: string;
-  icon: React.ComponentType<{ className?: string }>;
-}
-
-const NAV_ITEMS: NavItem[] = [
-  { id: 'MONITOR', label: 'MONITOR', sublabel: 'LIVE TRACE', icon: Activity },
-  { id: 'RUNS', label: 'RUNS', sublabel: 'LOG ARCHIVE', icon: Layers },
-  { id: 'TOPOLOGY', label: 'TOPOLOGY', sublabel: 'DAG GRAPH', icon: Network },
-  { id: 'EXPERIMENTS', label: 'EXPERIMENTS', sublabel: 'INJECTION', icon: Zap },
-  { id: 'ARCHIVE', label: 'ARCHIVE', sublabel: 'RECORDS', icon: Archive },
-  { id: 'SETTINGS', label: 'SETTINGS', sublabel: 'PARAMS', icon: Settings },
-];
+const NAV_ICONS: Record<SidebarNavItemId, React.ComponentType<{ className?: string }>> = {
+  MONITOR: Activity,
+  RUNS: Layers,
+  TOPOLOGY: Network,
+  EXPERIMENTS: Zap,
+  ARCHIVE: Archive,
+  SETTINGS: Settings,
+};
 
 export const Navigation: React.FC<NavigationProps> = ({
   currentDestination,
   onSelectDestination,
+  onFocusExperiments,
   collapsed,
   onToggleCollapse,
 }) => {
@@ -82,16 +82,33 @@ export const Navigation: React.FC<NavigationProps> = ({
 
         {/* Vertical Switch Stack */}
         <div className="p-2 space-y-1.5">
-          {NAV_ITEMS.map((item) => {
-            const isActive = currentDestination === item.id;
-            const Icon = item.icon;
+          {SIDEBAR_NAV_ITEMS.map((item) => {
+            const isActive =
+              !item.disabled && !item.focusStaging && currentDestination === item.id;
+            const Icon = NAV_ICONS[item.id];
+
+            const handleItemClick = () => {
+              const { nextDestination, shouldFocusStaging } = resolveNavigationSelection(
+                item,
+                currentDestination
+              );
+              if (item.disabled) return;
+              if (shouldFocusStaging && onFocusExperiments) {
+                onFocusExperiments();
+                return;
+              }
+              onSelectDestination(nextDestination);
+            };
 
             return (
               <button
                 key={item.id}
-                onClick={() => onSelectDestination(item.id)}
-                title={`${item.label} — ${item.sublabel}`}
-                className={`w-full switch-selector text-left relative rounded-none transition-all ${
+                type="button"
+                disabled={item.disabled}
+                aria-disabled={item.disabled || undefined}
+                onClick={handleItemClick}
+                title={item.title}
+                className={`w-full switch-selector text-left relative rounded-none transition-all group ${
                   collapsed
                     ? 'h-11 flex items-center justify-center px-0'
                     : 'px-3 py-2.5 flex items-center gap-3'
@@ -102,9 +119,11 @@ export const Navigation: React.FC<NavigationProps> = ({
 
                 <Icon
                   className={`${collapsed ? 'w-5 h-5' : 'w-4 h-4'} transition-colors shrink-0 ${
-                    isActive
+                    item.disabled
+                      ? 'text-chrono-muted/70'
+                      : isActive
                       ? 'text-chrono-phosphor drop-shadow-[0_0_6px_rgba(184,255,0,0.8)]'
-                      : 'text-chrono-muted'
+                      : 'text-chrono-muted group-hover:text-chrono-phosphor'
                   }`}
                 />
 
@@ -113,9 +132,11 @@ export const Navigation: React.FC<NavigationProps> = ({
                     <div className="flex flex-col min-w-0">
                       <span
                         className={`font-mono text-xs font-bold tracking-wider leading-tight ${
-                          isActive
+                          item.disabled
+                            ? 'text-chrono-muted'
+                            : isActive
                             ? 'text-chrono-phosphor drop-shadow-[0_0_6px_rgba(184,255,0,0.6)]'
-                            : 'text-chrono-text hover:text-chrono-phosphor'
+                            : 'text-chrono-text group-hover:text-chrono-phosphor'
                         }`}
                       >
                         {item.label}
@@ -133,6 +154,18 @@ export const Navigation: React.FC<NavigationProps> = ({
                             : 'bg-chrono-grid'
                         }`}
                       />
+                    )}
+
+                    {item.badge && (
+                      <span
+                        className={`ml-auto font-mono text-[8px] font-bold px-1.5 py-0.5 border tracking-wider shrink-0 ${
+                          item.disabled
+                            ? 'border-chrono-grid bg-[#040604] text-chrono-muted'
+                            : 'border-chrono-phosphor/35 bg-[#0b1208] text-chrono-phosphor/85'
+                        }`}
+                      >
+                        {item.badge}
+                      </span>
                     )}
                   </>
                 )}

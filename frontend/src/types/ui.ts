@@ -1,12 +1,6 @@
 import { ChronosEvent, ChronosRun, ServiceSummary } from './events';
 
-export type NavDestination =
-  | 'MONITOR'
-  | 'RUNS'
-  | 'TOPOLOGY'
-  | 'EXPERIMENTS'
-  | 'ARCHIVE'
-  | 'SETTINGS';
+export type NavDestination = 'MONITOR' | 'RUNS' | 'TOPOLOGY';
 
 export type InspectorTarget =
   | { type: 'EVENT'; event: ChronosEvent }

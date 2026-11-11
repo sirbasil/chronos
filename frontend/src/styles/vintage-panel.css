@@ -127,6 +127,28 @@
   box-shadow: 0 0 10px rgba(184, 255, 0, 0.15), inset 0 1px 1px rgba(255, 255, 255, 0.12);
 }
 
+.switch-selector:disabled,
+.switch-selector[aria-disabled='true'] {
+  background: linear-gradient(180deg, #0b0f09 0%, #070a06 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-left: 1px solid rgba(255, 255, 255, 0.03);
+  border-right: 1px solid rgba(0, 0, 0, 0.7);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: none;
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.switch-selector:disabled:hover,
+.switch-selector[aria-disabled='true']:hover {
+  background: linear-gradient(180deg, #0b0f09 0%, #070a06 100%);
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  border-left: 1px solid rgba(255, 255, 255, 0.03);
+  border-right: 1px solid rgba(0, 0, 0, 0.7);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.8);
+  box-shadow: none;
+}
+
 .switch-selector.active {
   background: linear-gradient(180deg, #202c14 0%, #131b0c 100%);
   border-top: 1px solid rgba(184, 255, 0, 0.5);

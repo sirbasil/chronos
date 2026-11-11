@@ -1,28 +1,27 @@
 import React from 'react';
 import { ChronosRun } from '../../types/events';
 import { DigitalDisplay } from '../common/DigitalDisplay';
+import { computeRunDurationMs } from '../../utils/runTelemetry';
 
 interface MetricsClusterProps {
-  run: ChronosRun;
+  run: ChronosRun | null;
   onSelectMetric?: (metricKey: string) => void;
 }
 
 export const MetricsCluster: React.FC<MetricsClusterProps> = ({ run, onSelectMetric }) => {
   // Compute metrics from actual run events
-  const totalEvents = run.events.length;
-  const uniqueServices = new Set(run.events.map((e) => e.service_id)).size;
-  const failureInjections = run.events.filter((e) => e.event_type === 'FAILURE_INJECTED').length;
-
-  const lastOffset = run.events.length > 0
-    ? Math.max(...run.events.map((e) => e.offset_ms ?? 0))
-    : 0;
+  const events = run?.events || [];
+  const totalEvents = events.length;
+  const uniqueServices = new Set(events.map((e) => e.service_id)).size;
+  const failureInjections = events.filter((e) => e.event_type === 'FAILURE_INJECTED').length;
+  const durationMs = run ? computeRunDurationMs(events, run) : 0;
 
   return (
-    <div className="flex items-center gap-3 select-none flex-nowrap shrink-0">
+    <div className="flex flex-wrap items-center gap-2.5 sm:gap-3 select-none">
       {/* Primary Hero Readout: Duration (Amber / Hazard Glow) */}
       <DigitalDisplay
         label="Run Duration"
-        value={lastOffset}
+        value={durationMs}
         unit="ms"
         digits={4}
         size="hero"

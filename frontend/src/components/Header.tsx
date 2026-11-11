@@ -5,7 +5,7 @@ import { AppMode, BackendConnectionState, BackendHealth } from '../types/api';
 import { Server, Box, SidebarClose, SidebarOpen, RefreshCw, Radio, Play, Loader2 } from 'lucide-react';
 
 interface HeaderProps {
-  currentRun: ChronosRun;
+  currentRun: ChronosRun | null;
   runs: ChronosRun[];
   onSelectRun: (run: ChronosRun) => void;
   mode: AppMode;
@@ -22,6 +22,7 @@ interface HeaderProps {
   onSignOut?: () => void;
   onCreateRun?: () => void;
   isCreatingRun?: boolean;
+  isActionInProgress?: boolean;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -42,6 +43,7 @@ export const Header: React.FC<HeaderProps> = ({
   onSignOut,
   onCreateRun,
   isCreatingRun = false,
+  isActionInProgress = false,
 }) => {
   const getBackendStatusBadge = () => {
     if (mode === 'PREVIEW') {
@@ -83,9 +85,9 @@ export const Header: React.FC<HeaderProps> = ({
   const backendStatus = getBackendStatusBadge();
 
   return (
-    <header className="h-[52px] bg-[#070b05] border-b border-chrono-grid flex items-center justify-between px-4 select-none shrink-0 z-20">
+    <header className="min-h-[52px] bg-[#070b05] border-b border-chrono-grid flex flex-wrap items-center justify-between gap-2 px-4 py-1.5 select-none shrink-0 z-20">
       {/* Left: Brand Identity & Bertone / Athon Digital Cluster Badge */}
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-3 sm:gap-4">
         <div className="flex items-center gap-2.5">
           <div className="w-2.5 h-7 bg-chrono-phosphor shadow-[0_0_10px_#b8ff00]" />
           <div>
@@ -132,15 +134,20 @@ export const Header: React.FC<HeaderProps> = ({
         <span className="text-[10px] font-mono text-chrono-muted tracking-widest uppercase font-bold">
           {mode === 'LIVE' ? 'PERSISTED RUN:' : 'DEMO FIXTURE:'}
         </span>
-        {runs.length > 0 ? (
+        {runs.length > 0 && currentRun ? (
           <select
             value={currentRun.run_id}
             onChange={(e) => {
               const found = runs.find((r) => r.run_id === e.target.value);
               if (found) onSelectRun(found);
             }}
-            disabled={isLoading}
-            className="bg-[#0b1009] text-chrono-phosphor font-mono text-xs font-bold px-2.5 py-0.5 border border-chrono-grid cursor-pointer focus:outline-none focus:border-chrono-phosphor max-w-[320px] truncate"
+            disabled={isLoading || isCreatingRun || isActionInProgress}
+            className="bg-[#0b1009] text-chrono-phosphor font-mono text-xs font-bold px-2.5 py-0.5 border border-chrono-grid cursor-pointer focus:outline-none focus:border-chrono-phosphor max-w-[320px] truncate disabled:opacity-40 disabled:cursor-not-allowed"
+            title={
+              isActionInProgress
+                ? 'Run switching disabled while checkout or failure injection is active'
+                : 'Select persisted or preview run'
+            }
           >
             {runs.map((r, i) => (
               <option key={r.run_id} value={r.run_id}>
@@ -150,13 +157,18 @@ export const Header: React.FC<HeaderProps> = ({
           </select>
         ) : (
           <span className="text-[11px] font-mono text-chrono-amber px-2 py-0.5 italic">
-            NO RECORDED RUNS
+            {isLoading && mode === 'LIVE' ? 'SYNCHRONIZING...' : 'NO RECORDED RUNS'}
           </span>
         )}
         <button
-          onClick={() => onSelectInspectorTarget({ type: 'RUN_SUMMARY', run: currentRun })}
-          className="text-[10px] font-mono font-bold px-2 py-0.5 bg-[#12190e] border border-chrono-grid text-chrono-muted hover:text-chrono-phosphor hover:border-chrono-phosphor transition-colors"
-          title="Inspect Run Telemetry Metadata"
+          onClick={() => {
+            if (currentRun) {
+              onSelectInspectorTarget({ type: 'RUN_SUMMARY', run: currentRun });
+            }
+          }}
+          disabled={!currentRun}
+          className="text-[10px] font-mono font-bold px-2 py-0.5 bg-[#12190e] border border-chrono-grid text-chrono-muted hover:text-chrono-phosphor hover:border-chrono-phosphor transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          title={currentRun ? 'Inspect Run Telemetry Metadata' : 'No active run to inspect'}
         >
           DETAILS
         </button>
@@ -164,9 +176,13 @@ export const Header: React.FC<HeaderProps> = ({
         {onCreateRun && mode === 'LIVE' && (
           <button
             onClick={onCreateRun}
-            disabled={isLoading || isCreatingRun}
+            disabled={isLoading || isCreatingRun || isActionInProgress}
             className="flex items-center gap-1 text-[10px] font-mono font-bold px-2 py-0.5 bg-[#12220f] border border-[#22c55e] text-[#4ade80] hover:bg-[#1a3816] hover:shadow-[0_0_6px_rgba(34,197,94,0.4)] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-            title="Create a new run on backend (POST /runs)"
+            title={
+              isActionInProgress
+                ? 'Wait for active checkout or failure injection to complete'
+                : 'Create a new run on backend (POST /runs)'
+            }
           >
             {isCreatingRun ? (
               <Loader2 className="w-2.5 h-2.5 animate-spin text-[#4ade80]" />
@@ -198,8 +214,8 @@ export const Header: React.FC<HeaderProps> = ({
         {/* Refresh / Retry Button */}
         <button
           onClick={onRefresh}
-          disabled={isLoading}
-          className={`p-1.5 bg-[#040604] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-all ${
+          disabled={isLoading || isCreatingRun || isActionInProgress}
+          className={`p-1.5 bg-[#040604] border border-chrono-grid hover:border-chrono-phosphor text-chrono-muted hover:text-chrono-phosphor transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
             isLoading ? 'animate-spin text-chrono-phosphor border-chrono-phosphor' : ''
           }`}
           title="Refresh Telemetry & Ping Backend"
@@ -208,16 +224,43 @@ export const Header: React.FC<HeaderProps> = ({
           <RefreshCw className="w-3.5 h-3.5" />
         </button>
 
-        {/* Docker Indicator Pod */}
+        {/* Runtime Topology Reference Pod (no unverified container auto-recovery claims) */}
         <button
           onClick={() => onSelectInspectorTarget({ type: 'DOCKER_STATUS' })}
           className="flex items-center gap-2 px-2.5 py-1 bg-[#040604] border border-chrono-grid hover:border-chrono-amber hover:bg-[#0c1209] transition-all group shadow-sm"
-          title="Docker Compose: 01-http-basics"
+          title={
+            mode === 'PREVIEW'
+              ? 'Preview mode: no live container queries'
+              : 'Compose stack 01-http-basics (Payment availability verified on checkout)'
+          }
         >
           <Box className="w-3.5 h-3.5 text-chrono-muted group-hover:text-chrono-amber" />
-          <div className="w-2 h-2 rounded-full bg-[#22c55e] shadow-[0_0_6px_#22c55e]" />
+          <div
+            className={`w-2 h-2 rounded-full ${
+              mode === 'PREVIEW'
+                ? 'bg-chrono-amber shadow-[0_0_6px_#ff9e00]'
+                : connectionState === 'CONNECTED'
+                ? 'bg-chrono-phosphor shadow-[0_0_6px_#b8ff00]'
+                : 'bg-chrono-red shadow-[0_0_6px_#ff3333]'
+            }`}
+          />
           <span className="font-mono text-[10px] text-chrono-muted group-hover:text-chrono-amber">
-            DOCKER: <span className="text-[#4ade80] font-bold">READY</span>
+            STACK:{' '}
+            <span
+              className={`font-bold ${
+                mode === 'PREVIEW'
+                  ? 'text-chrono-amber'
+                  : connectionState === 'CONNECTED'
+                  ? 'text-chrono-phosphor'
+                  : 'text-chrono-red'
+              }`}
+            >
+              {mode === 'PREVIEW'
+                ? 'PREVIEW'
+                : connectionState === 'CONNECTED'
+                ? 'COMPOSE'
+                : 'OFFLINE'}
+            </span>
           </span>
         </button>
 
