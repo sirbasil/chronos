@@ -13,7 +13,7 @@ import requests
 from auth import (
     AuthenticatedUser,
     get_current_user,
-    require_operator_or_admin,
+    require_admin,
     validate_cognito_config,
 )
 from database import (
@@ -242,7 +242,7 @@ class FailureInjectionResponse(BaseModel):
 def inject_run_failure(
     run_id: UUID,
     req: FailureInjectionRequest,
-    user: AuthenticatedUser = Depends(require_operator_or_admin),
+    user: AuthenticatedUser = Depends(require_admin),
 ):
     """Inject a controlled failure into an active run."""
     run = get_run(run_id)

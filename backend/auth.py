@@ -342,6 +342,30 @@ async def get_current_user(
     return verify_cognito_access_token(credentials.credentials)
 
 
+def _verify_group_membership(
+    user: AuthenticatedUser,
+    allowed_groups: list[str],
+    action_label: str,
+) -> AuthenticatedUser:
+    """Enforce membership in at least one allowed Cognito group from verified token claims."""
+    user_groups = set(user.groups)
+    if not user_groups.intersection(allowed_groups):
+        logger.warning(
+            "User '%s' (sub: %s) denied access to %s. Groups: %s, Required: %s",
+            user.username,
+            user.sub,
+            action_label,
+            user.groups,
+            allowed_groups,
+        )
+        required_desc = " or ".join(f"'{group}'" for group in allowed_groups)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Forbidden: Action requires membership in {required_desc}",
+        )
+    return user
+
+
 async def require_operator_or_admin(
     user: AuthenticatedUser = Depends(get_current_user),
 ) -> AuthenticatedUser:
@@ -349,23 +373,22 @@ async def require_operator_or_admin(
     FastAPI dependency requiring membership in 'chronos-admins' or 'chronos-operators'.
     Reads groups exclusively from verified token claims.
     """
-    allowed_groups = {settings.admin_group, settings.operator_group}
-    user_groups = set(user.groups)
+    return _verify_group_membership(
+        user,
+        [settings.admin_group, settings.operator_group],
+        "operator action",
+    )
 
-    if not user_groups.intersection(allowed_groups):
-        logger.warning(
-            "User '%s' (sub: %s) denied access to operator action. Groups: %s, Required: %s",
-            user.username,
-            user.sub,
-            user.groups,
-            sorted(allowed_groups),
-        )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                f"Forbidden: Action requires membership in '{settings.admin_group}' "
-                f"or '{settings.operator_group}'"
-            ),
-        )
 
-    return user
+async def require_admin(
+    user: AuthenticatedUser = Depends(get_current_user),
+) -> AuthenticatedUser:
+    """
+    FastAPI dependency requiring membership in 'chronos-admins'.
+    Reads groups exclusively from verified Cognito JWT claims.
+    """
+    return _verify_group_membership(
+        user,
+        [settings.admin_group],
+        "admin action",
+    )
