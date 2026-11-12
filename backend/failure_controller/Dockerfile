@@ -1,7 +1,13 @@
 FROM python:3.14-slim
 
-# Create dedicated non-root chronos user and group
-RUN groupadd -g 1001 chronos && \
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Apply available Debian security updates and create dedicated non-root chronos user and group
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1001 chronos && \
     useradd -u 1001 -g chronos -s /bin/sh -m chronos
 
 WORKDIR /app

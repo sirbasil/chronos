@@ -1,13 +1,25 @@
 FROM python:3.14-slim
 
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Apply available Debian security updates and create dedicated non-root chronos user
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd -g 1001 chronos && \
+    useradd -u 1001 -g chronos -s /bin/sh -m chronos
+
 WORKDIR /app
 
-# Install dependencies first for layer caching
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install minimal payment service dependencies for layer caching
+COPY requirements.payment.txt .
+RUN pip install --no-cache-dir -r requirements.payment.txt
 
 # Copy only the files this service needs
 COPY payment_service.py .
+
+USER chronos
 
 EXPOSE 8001
 
